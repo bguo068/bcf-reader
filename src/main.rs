@@ -1,27 +1,106 @@
-use noodles::bcf::{self, lazy::Record};
+use byteorder::{LittleEndian, ReadBytesExt};
+use noodles::bcf;
 use noodles::vcf::record::genotypes::keys::{key::Standard, Key};
+use std::io::{stdout, Read, Write};
 
 fn main() {
     let filename = "test.bcf";
+
+    // read bcf header
     let mut reader = std::fs::File::open(filename).map(bcf::Reader::new).unwrap();
     let header = reader.read_header().unwrap();
+
+    // get fmt/gt field idx
     let gt_key = Key::Standard(Standard::Genotype);
     let gt_fmt_key = header.formats()[&gt_key].idx().unwrap();
+
+    // get samples
     let samples = header.sample_names();
     let nsam = samples.len();
 
+    // genotype buffer
     let mut gt = vec![0u8; nsam * 2];
-    let mut record = Record::default();
 
-    use std::io::{stdout, Write};
+    // record reading buffer
+    let mut var_bytes = Vec::<u8>::new();
+    let mut fmt_bytes = Vec::<u8>::new();
+    let mut s_bytes = Vec::<u8>::new();
+    let mut r = reader.into_inner();
+
     let mut lock = stdout().lock();
-    while reader.read_lazy_record(&mut record).unwrap() > 0 {
-        let mut r = record.genotypes().as_ref().iter();
+
+    let mut irecord = 0usize;
+
+    // loop over bcf records
+    loop {
+        // shared block size
+        let l_shared = match r.read_u32::<LittleEndian>() {
+            Ok(x) => x as usize,
+            Err(_) => {
+                break; // break when reaching error due to EOF
+            }
+        };
+
+        // indv block size
+        let l_indv = r.read_u32::<LittleEndian>().unwrap() as usize;
+
+        // set buffer sizes
+        if l_shared > var_bytes.capacity() {
+            let additional = l_shared - var_bytes.capacity();
+            var_bytes.reserve(additional);
+        }
+        if l_indv > fmt_bytes.capacity() {
+            let additional = l_indv - fmt_bytes.capacity();
+            fmt_bytes.reserve(additional);
+        }
+        unsafe {
+            var_bytes.set_len(l_shared);
+            fmt_bytes.set_len(l_indv)
+        };
+
+        // read bytes to shared/indv blocks
+        r.read_exact(&mut var_bytes[..]).unwrap();
+        r.read_exact(&mut fmt_bytes[..]).unwrap();
+
+        irecord += 1;
+
+        let mut r = var_bytes.as_slice();
+
+        // read shared block info
+        let chrom = r.read_i32::<LittleEndian>().unwrap();
+        let pos = r.read_i32::<LittleEndian>().unwrap();
+        let rlen = r.read_i32::<LittleEndian>().unwrap();
+        let qual = r.read_f32::<LittleEndian>().unwrap();
+        print!("irecord={irecord}, chrom={chrom}, pos={pos}, rlen={rlen}, qual={qual}, ");
+        let _n_info = r.read_u16::<LittleEndian>().unwrap();
+        let n_allele = r.read_u16::<LittleEndian>().unwrap();
+        let _n_sample = r.read_u24::<LittleEndian>().unwrap();
+        let _n_fmt = r.read_u8().unwrap();
+        // print!("n_info={n_info}, n_allele={n_allele}, n_sample={n_sample}, n_fmt={n_fmt}");
+
+        // make iterator of shared block bytes
+        let mut r = r.iter();
+
+        // read typed string -- ids
+        read_bcf2_typed_string(&mut r, &mut s_bytes);
+
+        // read a list of typed string -- list of alleles
+        for _ in 0..n_allele {
+            read_bcf2_typed_string(&mut r, &mut s_bytes);
+            print!("{}", std::str::from_utf8(&s_bytes).unwrap());
+        }
+        print!(",\n");
+
+        // skip Filter/INFO parsing and go to indv block
+
+        // make iterator of indv block bytes
+        let mut r = fmt_bytes.as_slice().iter();
 
         // loop to find the gt field and parse gt (skipping non-gt field)
         loop {
-            let (field_idx, num_element, element_width, bcf2_type) =
-                read_bcf_gtbuf_field_info(&mut r);
+            // values each fmt field are array of arrays
+            // (nsam, num_element)
+            let (field_idx, num_element, element_width, bcf2_type) = read_bcf_gt_field_info(&mut r);
             let total_value_byte = num_element * element_width * (nsam as usize);
 
             // if GT:
@@ -44,7 +123,7 @@ fn main() {
     }
 }
 
-pub fn read_bcf_gtbuf_integer(it: &mut std::slice::Iter<u8>) -> usize {
+pub fn read_bcf2_typed_int(it: &mut std::slice::Iter<u8>) -> usize {
     let mut fmt_type = *it.next().unwrap();
     // integer type and width
     let int_len = fmt_type >> 4;
@@ -65,6 +144,25 @@ pub fn read_bcf_gtbuf_integer(it: &mut std::slice::Iter<u8>) -> usize {
     value
 }
 
+pub fn read_bcf2_typed_string(it: &mut std::slice::Iter<u8>, s: &mut Vec<u8>) {
+    let mut fmt_type = *it.next().unwrap();
+    // integer type and width
+    let mut int_len = (fmt_type >> 4).into();
+    // integer type
+    fmt_type &= 0xf;
+    assert_eq!(fmt_type, 7);
+    if int_len == 15 {
+        // overflow
+        int_len = read_bcf2_typed_int(it);
+    }
+
+    s.clear();
+    s.extend(it.as_slice()[..int_len].iter());
+    if int_len > 0 {
+        it.nth(int_len - 1);
+    }
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub enum Bcf2Type {
     MISSING,
@@ -75,15 +173,15 @@ pub enum Bcf2Type {
     Char8,
 }
 
-pub fn read_bcf_gtbuf_field_info(it: &mut std::slice::Iter<u8>) -> (usize, usize, usize, Bcf2Type) {
+pub fn read_bcf_gt_field_info(it: &mut std::slice::Iter<u8>) -> (usize, usize, usize, Bcf2Type) {
     // field index: used for identify which field it is
-    let field_idx = read_bcf_gtbuf_integer(it);
+    let field_idx = read_bcf2_typed_int(it);
 
     let fmt_type = *it.next().unwrap();
 
     // len is how man elements are there for each sample
     let num_element = match fmt_type >> 4 {
-        15 => read_bcf_gtbuf_integer(it),
+        15 => read_bcf2_typed_int(it),
         x => x as usize,
     };
 
