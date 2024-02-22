@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 byteorder = "1.4.3"
 noodles = { version = "0.41.0", features = ["bgzf", "bcf", "vcf"] }
+splitty = "1.0.1"

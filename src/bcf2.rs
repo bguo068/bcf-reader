@@ -1,4 +1,93 @@
 use byteorder::{LittleEndian, ReadBytesExt};
+use splitty;
+use std::{
+    collections::HashMap,
+    io::{Read, Seek},
+};
+
+#[derive(Debug)]
+pub struct Header {
+    infos: Vec<HashMap<String, String>>,
+    contigs: Vec<HashMap<String, String>>,
+    formats: Vec<HashMap<String, String>>,
+    samples: Vec<String>,
+    fmt_key: usize,
+}
+impl Header {
+    pub fn from_string(text: &str) -> Self {
+        let mut infos = Vec::<HashMap<String, String>>::new();
+        let mut contigs = Vec::<HashMap<String, String>>::new();
+        let mut formats = Vec::<HashMap<String, String>>::new();
+        let mut samples = Vec::<String>::new();
+        for line in text.trim_end_matches('\0').trim().split("\n") {
+            if line.starts_with("#CHROM") {
+                line.split("\t")
+                    .skip(8)
+                    .for_each(|s| samples.push(s.into()));
+                continue;
+            } else if line.trim().len() == 0 {
+                continue;
+            }
+            let dict_name = line.strip_prefix("##").unwrap().split("=").next().unwrap();
+            match dict_name {
+                "INFO" => {}
+                "FORMAT" => {}
+                "contig" => {}
+                _ => continue,
+            };
+            let l = line.find('<').unwrap();
+            let s = line.split_at(l + 1).1;
+            let r = s.rfind('>').unwrap();
+            let s = s.split_at(r).0;
+            let mut m = HashMap::<String, String>::new();
+            for kv_str in s.split(",") {
+                let kv_str = kv_str.trim();
+                let mut it = splitty::split_unquoted_char(kv_str, '=').unwrap_quotes(true);
+                let k = it.next().unwrap();
+                let v = it.next().unwrap();
+                m.insert(k.into(), v.into());
+            }
+            match dict_name {
+                "INFO" => infos.push(m),
+                "FORMAT" => formats.push(m),
+                "contig" => contigs.push(m),
+                _ => panic!(),
+            };
+        }
+
+        // reorder items if the header line has IDX key
+        let mut fmt_key = 0;
+        for (idx, fmt_rec) in formats.iter().enumerate() {
+            if fmt_rec.contains_key("FORMT") || fmt_rec.contains_key("FMT") {
+                fmt_key = idx;
+            }
+        }
+
+        Self {
+            infos,
+            contigs,
+            formats,
+            samples,
+            fmt_key,
+        }
+    }
+
+    pub fn get_chrname(&self, idx: usize) -> &str {
+        &self.contigs[idx]["ID"]
+    }
+    pub fn get_fmt_key(&self) -> usize {
+        self.fmt_key
+    }
+    pub fn get_contigs(&self) -> &Vec<HashMap<String, String>> {
+        &self.contigs
+    }
+    pub fn get_formats(&self) -> &Vec<HashMap<String, String>> {
+        &self.formats
+    }
+    pub fn get_samples(&self) -> &Vec<String> {
+        &self.samples
+    }
+}
 
 pub trait Bcf2Number {
     fn is_missing(&self) -> bool;
@@ -293,5 +382,26 @@ where
 fn test_read_header() {
     let mut f = std::fs::File::open("test_flat.bcf").unwrap();
     let s = read_header(&mut f);
-    println!("{s}");
+    let _header = Header::from_string(&s);
+    let mut l_shared;
+    let mut l_indv;
+    let mut shared_bytes = Vec::<u8>::new();
+    let mut indv_bytes = Vec::<u8>::new();
+
+    let mut nrec = 0;
+    loop {
+        l_shared = match f.read_u32::<LittleEndian>() {
+            Ok(x) => x,
+            Err(_x) => break,
+        };
+        l_indv = f.read_u32::<LittleEndian>().unwrap();
+        shared_bytes.resize(l_shared as usize, 0u8);
+        indv_bytes.resize(l_indv as usize, 0u8);
+        f.read(shared_bytes.as_mut_slice()).unwrap();
+        f.read(indv_bytes.as_mut_slice()).unwrap();
+        nrec += 1;
+    }
+
+    println!("fmt-key:{}", _header.fmt_key);
+    println!("nrec: {}", nrec);
 }
