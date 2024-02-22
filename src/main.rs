@@ -2,6 +2,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use noodles::bcf;
 use noodles::vcf::record::genotypes::keys::{key::Standard, Key};
 use std::io::{stdout, Read, Write};
+pub mod bcf2;
 
 fn main() {
     let filename = "test.bcf";
