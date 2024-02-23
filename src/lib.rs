@@ -484,6 +484,34 @@ impl Record {
 
 #[test]
 fn test_read_gt() {
+    // read data via bcftools
+    let chrom_str = String::from_utf8({
+        let mut cmd = std::process::Command::new("bcftools");
+        cmd.args(["query", "-f", r#"%CHROM\n"#, "test.bcf"]);
+        // dbg!(&cmd);
+        cmd.output().unwrap().stdout
+    })
+    .unwrap();
+    // dbg!(&chrom_str);
+    // return;
+    let pos_str = String::from_utf8(
+        std::process::Command::new("bcftools")
+            .args(["query", "-f", r#"%POS\n"#, "test.bcf"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let gt_str = String::from_utf8(
+        std::process::Command::new("bcftools")
+            .args(["query", "-f", r#"[\t%GT]\n"#, "test.bcf"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+
+    // read data via bcf-reader
     let mut f: Box<dyn std::io::Read> = {
         let mut f = std::fs::File::open("test.bcf").expect("can not open file");
         if (f.read_u8().expect("can not read first byte") == 0x1fu8)
@@ -502,17 +530,33 @@ fn test_read_gt() {
     let header = Header::from_string(&s);
     let mut record = Record::default();
 
-    let mut cnt0 = 0;
-    let mut cnt1 = 0;
+    let mut chrom_str2 = Vec::<u8>::new();
+    let mut pos_str2 = Vec::<u8>::new();
+    let mut gt_str2 = Vec::<u8>::new();
+
+    use std::io::Write;
     while let Ok(_) = record.read(&mut f) {
-        for bn in record.gt(&header) {
+        write!(
+            chrom_str2,
+            "{}\n",
+            header.get_chrname(record.chrom as usize)
+        )
+        .unwrap();
+        write!(pos_str2, "{}\n", record.pos + 1).unwrap();
+        for (idx, bn) in record.gt(&header).enumerate() {
             let allele = bn.gt_val().3;
-            if allele == 0 {
-                cnt0 += 1;
-            } else {
-                cnt1 += 1;
-            }
+            let sep = if idx % 2 == 0 { '\t' } else { '|' };
+            write!(gt_str2, "{}{}", sep, allele).unwrap();
         }
+        write!(gt_str2, "\n").unwrap();
     }
-    eprintln!("cnt0= {cnt0}, cnt1={cnt1}");
+
+    let chrom_str2 = String::from_utf8(chrom_str2).unwrap();
+    let pos_str2 = String::from_utf8(pos_str2).unwrap();
+    let gt_str2 = String::from_utf8(gt_str2).unwrap();
+
+    // compare bcftools results and bcf-reader results
+    assert_eq!(chrom_str, chrom_str2);
+    assert_eq!(pos_str, pos_str2);
+    assert_eq!(gt_str, gt_str2);
 }
