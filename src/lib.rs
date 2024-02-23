@@ -484,7 +484,20 @@ impl Record {
 
 #[test]
 fn test_read_gt() {
-    let mut f = std::fs::File::open("test_flat.bcf").unwrap();
+    let mut f: Box<dyn std::io::Read> = {
+        let mut f = std::fs::File::open("test.bcf").expect("can not open file");
+        if (f.read_u8().expect("can not read first byte") == 0x1fu8)
+            && (f.read_u8().expect("can not read second byte") == 0x8bu8)
+        {
+            // gzip format
+            f.rewind().unwrap();
+            Box::new(flate2::read::MultiGzDecoder::new(f))
+        } else {
+            // not gzip format
+            f.rewind().unwrap();
+            Box::new(std::io::BufReader::new(f))
+        }
+    };
     let s = read_header(&mut f);
     let header = Header::from_string(&s);
     let mut record = Record::default();

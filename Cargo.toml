@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 byteorder = "1.4.3"
-noodles = { version = "0.41.0", features = ["bgzf", "bcf", "vcf"] }
+flate2 = "1.0.28"
 splitty = "1.0.1"
