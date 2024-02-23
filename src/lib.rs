@@ -489,29 +489,17 @@ fn test_read_gt() {
     let header = Header::from_string(&s);
     let mut record = Record::default();
 
-    // let mut buf = vec![0u8; 0];
-
     let mut cnt0 = 0;
     let mut cnt1 = 0;
-    let mut cnt2 = 0;
     while let Ok(_) = record.read(&mut f) {
-        eprintln!("{cnt2}");
-        cnt2+=1;
-        // use std::io::Write;
         for bn in record.gt(&header) {
-            // write!(buf, "{}",bn.gt_val().3 ).unwrap();
-            // let allele = bn.gt_val().3;
-            let allele = 0;
+            let allele = bn.gt_val().3;
             if allele == 0 {
                 cnt0 += 1;
             } else {
                 cnt1 += 1;
             }
         }
-        // write!(buf, "\n").unwrap();
     }
-    // let buf = String::from_utf8(buf).unwrap();
-    // let buf2 = std::fs::read_to_string("test_gt.txt").unwrap();
-    // assert_eq!(buf, buf2);
     eprintln!("cnt0= {cnt0}, cnt1={cnt1}");
 }
