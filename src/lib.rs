@@ -26,7 +26,7 @@ impl Header {
         for line in text.trim_end_matches('\0').trim().split("\n") {
             if line.starts_with("#CHROM") {
                 line.split("\t")
-                    .skip(8)
+                    .skip(9)
                     .for_each(|s| samples.push(s.into()));
                 continue;
             } else if line.trim().len() == 0 {
@@ -480,6 +480,39 @@ impl Record {
         });
         it
     }
+}
+#[test]
+fn test_read_header() {
+    // read data via bcftools
+    let samples_str = String::from_utf8({
+        let mut cmd = std::process::Command::new("bcftools");
+        cmd.args(["query", "-l", "test.bcf"]);
+        cmd.output().unwrap().stdout
+    })
+    .unwrap();
+
+    // read data via bcf-reader
+    let mut f: Box<dyn std::io::Read> = {
+        let mut f = std::fs::File::open("test.bcf").expect("can not open file");
+        if (f.read_u8().expect("can not read first byte") == 0x1fu8)
+            && (f.read_u8().expect("can not read second byte") == 0x8bu8)
+        {
+            // gzip format
+            f.rewind().unwrap();
+            Box::new(flate2::read::MultiGzDecoder::new(f))
+        } else {
+            // not gzip format
+            f.rewind().unwrap();
+            Box::new(std::io::BufReader::new(f))
+        }
+    };
+    let s = read_header(&mut f);
+    let header = Header::from_string(&s);
+
+    let samples_str2 = header.get_samples().join("\n");
+
+    // compare bcftools results and bcf-reader results
+    assert_eq!(samples_str.trim(), samples_str2.trim());
 }
 
 #[test]
