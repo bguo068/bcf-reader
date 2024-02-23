@@ -82,6 +82,15 @@ impl Header {
         }
     }
 
+    pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
+        for (idx, m) in self.dict_strings.iter().enumerate() {
+            if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
     pub fn get_chrname(&self, idx: usize) -> &str {
         &self.dict_contigs[idx]["ID"]
     }
@@ -463,7 +472,7 @@ impl Record {
             false => Some(self.qual),
         }
     }
-    pub fn gt(&self, header: &Header) -> NumberIter<'_> {
+    pub fn fmt_gt(&self, header: &Header) -> NumberIter<'_> {
         let fmt_gt_id = header.get_fmt_gt_id();
         // default iterator
         let mut it = NumberIter::default();
@@ -471,6 +480,22 @@ impl Record {
         // find the right field for gt
         self.gt.iter().for_each(|e| {
             if e.0 == fmt_gt_id {
+                it = iter_typed_integers(
+                    e.1,
+                    e.2 as usize * self.n_sample as usize,
+                    &self.buf_gt[e.3.start..e.3.end],
+                );
+            }
+        });
+        it
+    }
+    pub fn fmt_field(&self, fmt_key: usize) -> NumberIter<'_> {
+        // default iterator
+        let mut it = NumberIter::default();
+
+        // find the right field for gt
+        self.gt.iter().for_each(|e| {
+            if e.0 == fmt_key {
                 it = iter_typed_integers(
                     e.1,
                     e.2 as usize * self.n_sample as usize,
@@ -510,6 +535,17 @@ mod tests {
             f.rewind().unwrap();
             Box::new(std::io::BufReader::new(f))
         }
+    }
+
+    #[test]
+    fn test_find_fmt_idx() {
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let s = read_header(&mut f);
+        let header = Header::from_string(&s);
+        let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
+
+        assert_eq!(key_found, header.fmt_gt_idx);
     }
 
     #[test]
@@ -584,7 +620,7 @@ mod tests {
 
         use std::io::Write;
         while let Ok(_) = record.read(&mut f) {
-            for (i, bn) in record.gt(&header).enumerate() {
+            for (i, bn) in record.fmt_gt(&header).enumerate() {
                 let (noploidy, dot, phased, allele) = bn.gt_val();
                 assert_eq!(noploidy, false); // missing ploidy
                 assert_eq!(dot, false); // missing allele call
