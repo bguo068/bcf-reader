@@ -480,20 +480,25 @@ impl Record {
         });
         it
     }
+    pub fn pos(&self) -> i32 {
+        self.pos
+    }
+    pub fn alleles(&self) -> &[Range<usize>] {
+        &self.alleles[..]
+    }
+    pub fn buf_gt(&self) -> &[u8] {
+        &self.buf_gt[..]
+    }
+    pub fn buf_site(&self) -> &[u8] {
+        &self.buf_site[..]
+    }
 }
-#[test]
-fn test_read_header() {
-    // read data via bcftools
-    let samples_str = String::from_utf8({
-        let mut cmd = std::process::Command::new("bcftools");
-        cmd.args(["query", "-l", "test.bcf"]);
-        cmd.output().unwrap().stdout
-    })
-    .unwrap();
 
-    // read data via bcf-reader
-    let mut f: Box<dyn std::io::Read> = {
-        let mut f = std::fs::File::open("test.bcf").expect("can not open file");
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
+        let mut f = std::fs::File::open(p.as_ref()).expect("can not open file");
         if (f.read_u8().expect("can not read first byte") == 0x1fu8)
             && (f.read_u8().expect("can not read second byte") == 0x8bu8)
         {
@@ -505,91 +510,157 @@ fn test_read_header() {
             f.rewind().unwrap();
             Box::new(std::io::BufReader::new(f))
         }
-    };
-    let s = read_header(&mut f);
-    let header = Header::from_string(&s);
-
-    let samples_str2 = header.get_samples().join("\n");
-
-    // compare bcftools results and bcf-reader results
-    assert_eq!(samples_str.trim(), samples_str2.trim());
-}
-
-#[test]
-fn test_read_gt() {
-    // read data via bcftools
-    let chrom_str = String::from_utf8({
-        let mut cmd = std::process::Command::new("bcftools");
-        cmd.args(["query", "-f", r#"%CHROM\n"#, "test.bcf"]);
-        // dbg!(&cmd);
-        cmd.output().unwrap().stdout
-    })
-    .unwrap();
-    // dbg!(&chrom_str);
-    // return;
-    let pos_str = String::from_utf8(
-        std::process::Command::new("bcftools")
-            .args(["query", "-f", r#"%POS\n"#, "test.bcf"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let gt_str = String::from_utf8(
-        std::process::Command::new("bcftools")
-            .args(["query", "-f", r#"[\t%GT]\n"#, "test.bcf"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
-
-    // read data via bcf-reader
-    let mut f: Box<dyn std::io::Read> = {
-        let mut f = std::fs::File::open("test.bcf").expect("can not open file");
-        if (f.read_u8().expect("can not read first byte") == 0x1fu8)
-            && (f.read_u8().expect("can not read second byte") == 0x8bu8)
-        {
-            // gzip format
-            f.rewind().unwrap();
-            Box::new(flate2::read::MultiGzDecoder::new(f))
-        } else {
-            // not gzip format
-            f.rewind().unwrap();
-            Box::new(std::io::BufReader::new(f))
-        }
-    };
-    let s = read_header(&mut f);
-    let header = Header::from_string(&s);
-    let mut record = Record::default();
-
-    let mut chrom_str2 = Vec::<u8>::new();
-    let mut pos_str2 = Vec::<u8>::new();
-    let mut gt_str2 = Vec::<u8>::new();
-
-    use std::io::Write;
-    while let Ok(_) = record.read(&mut f) {
-        write!(
-            chrom_str2,
-            "{}\n",
-            header.get_chrname(record.chrom as usize)
-        )
-        .unwrap();
-        write!(pos_str2, "{}\n", record.pos + 1).unwrap();
-        for (idx, bn) in record.gt(&header).enumerate() {
-            let allele = bn.gt_val().3;
-            let sep = if idx % 2 == 0 { '\t' } else { '|' };
-            write!(gt_str2, "{}{}", sep, allele).unwrap();
-        }
-        write!(gt_str2, "\n").unwrap();
     }
 
-    let chrom_str2 = String::from_utf8(chrom_str2).unwrap();
-    let pos_str2 = String::from_utf8(pos_str2).unwrap();
-    let gt_str2 = String::from_utf8(gt_str2).unwrap();
+    #[test]
+    fn test_read_samples() {
+        // read data via bcftools
+        let samples_str = String::from_utf8({
+            let mut cmd = std::process::Command::new("bcftools");
+            cmd.args(["query", "-l", "test.bcf"]);
+            cmd.output().unwrap().stdout
+        })
+        .unwrap();
 
-    // compare bcftools results and bcf-reader results
-    assert_eq!(chrom_str, chrom_str2);
-    assert_eq!(pos_str, pos_str2);
-    assert_eq!(gt_str, gt_str2);
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let s = read_header(&mut f);
+        let header = Header::from_string(&s);
+        let samples_str2 = header.get_samples().join("\n");
+
+        // compare bcftools results and bcf-reader results
+        assert_eq!(samples_str.trim(), samples_str2.trim());
+    }
+
+    #[test]
+    fn test_read_site_chrom() {
+        // read data via bcftools
+        let chrom_str = String::from_utf8({
+            let mut cmd = std::process::Command::new("bcftools");
+            cmd.args(["query", "-f", r#"%CHROM\n"#, "test.bcf"]);
+            // dbg!(&cmd);
+            cmd.output().unwrap().stdout
+        })
+        .unwrap();
+
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let s = read_header(&mut f);
+        let header = Header::from_string(&s);
+        let mut record = Record::default();
+        let mut chrom_str2 = Vec::<u8>::new();
+        use std::io::Write;
+        while let Ok(_) = record.read(&mut f) {
+            write!(
+                chrom_str2,
+                "{}\n",
+                header.get_chrname(record.chrom as usize)
+            )
+            .unwrap();
+        }
+        let chrom_str2 = String::from_utf8(chrom_str2).unwrap();
+
+        // compare bcftools results and bcf-reader results
+        assert_eq!(chrom_str, chrom_str2);
+    }
+
+    #[test]
+    fn test_read_fmt_gt() {
+        let gt_str = String::from_utf8(
+            std::process::Command::new("bcftools")
+                .args(["query", "-f", r#"[\t%GT]\n"#, "test.bcf"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let s = read_header(&mut f);
+        let header = Header::from_string(&s);
+        let mut record = Record::default();
+        let mut gt_str2 = Vec::<u8>::new();
+
+        use std::io::Write;
+        while let Ok(_) = record.read(&mut f) {
+            for (i, bn) in record.gt(&header).enumerate() {
+                let (noploidy, dot, phased, allele) = bn.gt_val();
+                assert_eq!(noploidy, false); // missing ploidy
+                assert_eq!(dot, false); // missing allele call
+                let mut sep = '\t';
+                if i % 2 == 1 {
+                    assert_eq!(phased, true); // gt call is phased
+                    sep = '|';
+                }
+                write!(gt_str2, "{sep}{allele}").unwrap();
+            }
+            write!(gt_str2, "\n").unwrap();
+        }
+
+        let gt_str2 = String::from_utf8(gt_str2).unwrap();
+
+        // compare bcftools results and bcf-reader results
+        assert_eq!(gt_str, gt_str2);
+    }
+
+    #[test]
+    fn test_read_site_pos() {
+        // read data via bcftools
+        let pos_str = String::from_utf8(
+            std::process::Command::new("bcftools")
+                .args(["query", "-f", r#"%POS\n"#, "test.bcf"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let _s = read_header(&mut f);
+        let mut record = Record::default();
+        let mut pos_str2 = Vec::<u8>::new();
+
+        use std::io::Write;
+        while let Ok(_) = record.read(&mut f) {
+            write!(pos_str2, "{}\n", record.pos + 1).unwrap();
+        }
+
+        let pos_str2 = String::from_utf8(pos_str2).unwrap();
+        // compare bcftools results and bcf-reader results
+        assert_eq!(pos_str, pos_str2);
+    }
+
+    #[test]
+    fn test_read_site_alleles() {
+        // read data via bcftools
+        let allele_str = String::from_utf8(
+            std::process::Command::new("bcftools")
+                .args(["query", "-f", r#"%REF,%ALT\n"#, "test.bcf"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // read data via bcf-reader
+        let mut f = smart_reader("test.bcf");
+        let _s = read_header(&mut f);
+        let mut record = Record::default();
+        let mut allele_str2 = Vec::<u8>::new();
+
+        while let Ok(_) = record.read(&mut f) {
+            for rng in record.alleles.iter() {
+                let slice = &record.buf_site[rng.start..rng.end];
+                allele_str2.extend(slice);
+                allele_str2.push(b',');
+            }
+            *allele_str2.last_mut().unwrap() = b'\n';
+        }
+
+        let allele_str2 = String::from_utf8(allele_str2).unwrap();
+        // compare bcftools results and bcf-reader results
+        assert_eq!(allele_str, allele_str2);
+    }
 }
