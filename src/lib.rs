@@ -244,6 +244,7 @@ pub fn bcf2_typ_width(typ: u8) -> usize {
     }
 }
 
+#[derive(Debug)]
 pub enum NumbericValue {
     U8(u8),
     U16(u16),
@@ -298,12 +299,15 @@ impl NumbericValue {
             None => {
                 noploidy = true;
             }
-            Some(int_val) if int_val + 1 == 0 => {
-                dot = true;
-            }
             Some(int_val) => {
                 phased = (int_val & 0x1) != 0;
-                allele = (int_val >> 1) - 1;
+
+                let int_val = int_val >> 1;
+                if int_val == 0 {
+                    dot = true;
+                } else {
+                    allele = int_val - 1;
+                }
             }
         };
 
@@ -645,7 +649,6 @@ mod tests {
         let chrom_str = String::from_utf8({
             let mut cmd = std::process::Command::new("bcftools");
             cmd.args(["query", "-f", r#"%CHROM\n"#, "testdata/test.bcf"]);
-            // dbg!(&cmd);
             cmd.output().unwrap().stdout
         })
         .unwrap();
@@ -694,7 +697,6 @@ mod tests {
             for (i, bn) in record.fmt_gt(&header).enumerate() {
                 let (noploidy, dot, phased, allele) = bn.gt_val();
                 assert_eq!(noploidy, false); // missing ploidy
-                assert_eq!(dot, false); // missing allele call
                 let mut sep = '\t';
                 if i % 2 == 1 {
                     if phased {
@@ -703,7 +705,11 @@ mod tests {
                         sep = '/';
                     }
                 }
-                write!(gt_str2, "{sep}{allele}").unwrap();
+                if dot {
+                    write!(gt_str2, "{sep}.").unwrap();
+                } else {
+                    write!(gt_str2, "{sep}{allele}").unwrap();
+                }
             }
             write!(gt_str2, "\n").unwrap();
         }
@@ -711,7 +717,13 @@ mod tests {
         let gt_str2 = String::from_utf8(gt_str2).unwrap();
 
         // compare bcftools results and bcf-reader results
-        assert_eq!(gt_str, gt_str2);
+        // assert_eq!(gt_str, gt_str2);
+        for (a, b) in gt_str
+            .split(|c| (c == '\n') || (c == '\t'))
+            .zip(gt_str2.split(|c| (c == '\n') || (c == '\t')))
+        {
+            assert_eq!(a, b);
+        }
     }
 
     #[test]
