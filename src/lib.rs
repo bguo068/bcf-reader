@@ -728,6 +728,55 @@ mod tests {
     }
 
     #[test]
+    fn test_read_fmt_ad() {
+        let ad_str = String::from_utf8(
+            std::process::Command::new("bcftools")
+                .args(["query", "-f", r#"[\t%AD]\n"#, "testdata/test.bcf"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+
+        // read data via bcf-reader
+        let mut f = smart_reader("testdata/test.bcf");
+        let s = read_header(&mut f);
+        let header = Header::from_string(&s);
+        let mut record = Record::default();
+        let mut ad_str2 = Vec::<u8>::new();
+
+        use std::io::Write;
+        let ad_filed_key = header.get_idx_from_dictionary_str("FORMAT", "AD").unwrap();
+        while let Ok(_) = record.read(&mut f) {
+            for (i, val) in record.fmt_field(ad_filed_key).enumerate() {
+                if i % record.n_allele as usize == 0 {
+                    if ad_str2.last().map(|c| *c == b',') == Some(true) {
+                        ad_str2.pop(); // trim last allele separator
+                    }
+                    ad_str2.push(b'\t'); // sample separator
+                }
+                match val.int_val() {
+                    None => {}
+                    Some(ad) => {
+                        write!(ad_str2, "{ad},").unwrap(); // allele separator
+                    }
+                }
+            }
+            // site separator
+            *ad_str2.last_mut().unwrap() = b'\n'; // sample separator
+        }
+
+        let ad_str2 = String::from_utf8(ad_str2).unwrap();
+
+        // compare bcftools results and bcf-reader results
+        for (a, b) in ad_str
+            .split(|c| (c == '\n') || (c == '\t'))
+            .zip(ad_str2.split(|c| (c == '\n') || (c == '\t')))
+        {
+            assert_eq!(a, b);
+        }
+    }
+    #[test]
     fn test_read_site_pos() {
         // read data via bcftools
         let pos_str = String::from_utf8(
