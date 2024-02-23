@@ -1,7 +1,54 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use splitty;
 use std::ops::Range;
 use std::{collections::HashMap, io::Seek};
+
+pub struct QuotedSplitter<'a> {
+    data: &'a str,
+    in_quotes: bool,
+    sep: char,
+    quote: char,
+}
+
+impl<'a> QuotedSplitter<'a> {
+    pub fn new(buffer: &'a str, separator: char, quote: char) -> Self {
+        Self {
+            data: buffer,
+            in_quotes: false,
+            sep: separator,
+            quote,
+        }
+    }
+}
+
+impl<'a> Iterator for QuotedSplitter<'a> {
+    type Item = &'a str;
+    fn next(&mut self) -> Option<Self::Item> {
+        for (idx, ch) in self.data.char_indices() {
+            if ch == self.quote {
+                self.in_quotes = !self.in_quotes;
+            }
+            if (!self.in_quotes) && ch == self.sep {
+                let (out, remain) = self.data.split_at(idx);
+                self.data = remain.strip_prefix(self.sep).unwrap();
+                return Some(out);
+            }
+        }
+        if self.data.len() > 0 {
+            let out = self.data;
+            self.data = "";
+            Some(out)
+        } else {
+            None
+        }
+    }
+}
+
+#[test]
+fn test_quoted_splitter() {
+    let input_string = "hello,\"world, this is fun\",test";
+    let result: Vec<_> = QuotedSplitter::new(input_string, ',', '"').collect();
+    assert_eq!(result, vec!["hello", "\"world, this is fun\"", "test"]);
+}
 
 #[derive(Debug)]
 pub struct Header {
@@ -23,7 +70,8 @@ impl Header {
         m.insert("Description".into(), r#""All filters passed""#.into());
         dict_strings.push(m);
         //
-        for line in text.trim_end_matches('\0').trim().split("\n") {
+        let mut idx_counter = 1;
+        for line in QuotedSplitter::new(text.trim_end_matches('\0').trim(), '\n', '"') {
             if line.starts_with("#CHROM") {
                 line.split("\t")
                     .skip(9)
@@ -32,7 +80,7 @@ impl Header {
             } else if line.trim().len() == 0 {
                 continue;
             }
-            let mut it = line.strip_prefix("##").unwrap().split("=");
+            let mut it = QuotedSplitter::new(line.strip_prefix("##").unwrap(), '=', '"');
             let dict_name = it.next().unwrap();
             let valid_dict = match it.next() {
                 Some(x) if x.starts_with("<") => true,
@@ -46,11 +94,16 @@ impl Header {
             let r = s.rfind('>').unwrap();
             let s = s.split_at(r).0;
             let mut m = HashMap::<String, String>::new();
-            for kv_str in s.split(",") {
+            for kv_str in QuotedSplitter::new(s, ',', '"') {
                 let kv_str = kv_str.trim();
-                let mut it = splitty::split_unquoted_char(kv_str, '=').unwrap_quotes(true);
+
+                let mut it = QuotedSplitter::new(kv_str, '=', '"');
                 let k = it.next().unwrap();
-                let v = it.next().unwrap();
+                let v = it
+                    .next()
+                    .unwrap()
+                    .trim_end_matches('"')
+                    .trim_start_matches('"');
                 m.insert(k.into(), v.into());
             }
             match dict_name {
