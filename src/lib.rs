@@ -52,15 +52,15 @@ fn test_quoted_splitter() {
 
 #[derive(Debug)]
 pub struct Header {
-    dict_strings: Vec<HashMap<String, String>>,
-    dict_contigs: Vec<HashMap<String, String>>,
+    dict_strings: HashMap<usize, HashMap<String, String>>,
+    dict_contigs: HashMap<usize, HashMap<String, String>>,
     samples: Vec<String>,
     fmt_gt_idx: usize,
 }
 impl Header {
     pub fn from_string(text: &str) -> Self {
-        let mut dict_strings = Vec::<HashMap<String, String>>::new();
-        let mut dict_contigs = Vec::<HashMap<String, String>>::new();
+        let mut dict_strings = HashMap::<usize, HashMap<String, String>>::new();
+        let mut dict_contigs = HashMap::<usize, HashMap<String, String>>::new();
         let mut samples = Vec::<String>::new();
 
         // implicit FILTER/PASS header lines
@@ -68,7 +68,7 @@ impl Header {
         m.insert("Dictionary".into(), "FILTER".into());
         m.insert("ID".into(), "PASS".into());
         m.insert("Description".into(), r#""All filters passed""#.into());
-        dict_strings.push(m);
+        dict_strings.insert(0, m);
         //
         let mut dict_str_idx_counter = 1;
         let mut dict_contig_idx_counter = 0;
@@ -110,27 +110,29 @@ impl Header {
             match dict_name {
                 "contig" => {
                     if m.contains_key("IDX") {
-                        assert_eq!(dict_contig_idx_counter, 0, "if one dict string has IDX all of them should have IDX in the dictionary")
+                        assert_eq!(dict_contig_idx_counter, 0, "if one dict string has IDX all of them should have IDX in the dictionary");
+                        let idx: usize = m["IDX"].parse().unwrap();
+                        dict_contigs.insert(idx, m);
                     } else {
-                        m.insert("IDX".into(), format!("{}", dict_contig_idx_counter));
+                        dict_contigs.insert(dict_contig_idx_counter, m);
                         dict_contig_idx_counter += 1;
                     }
-                    dict_contigs.push(m);
                 }
                 _ => {
                     if (dict_name == "FILTER") && (&m["ID"] == "PASS") {
                         // skip FILTER/PASS already added
                     } else {
                         if ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name) {
+                            m.insert("Dictionary".into(), dict_name.into());
                             if m.contains_key("IDX") {
-                                assert_eq!(dict_str_idx_counter, 1, "if one dict string has IDX all of them should have IDX in the dictionary")
+                                assert_eq!(dict_str_idx_counter, 1, "if one dict string has IDX all of them should have IDX in the dictionary");
+                                let idx: usize = m["IDX"].parse().unwrap();
+                                dict_strings.insert(idx, m);
                             } else {
-                                m.insert("IDX".into(), format!("{}", dict_str_idx_counter));
+                                dict_strings.insert(dict_str_idx_counter, m);
                                 dict_str_idx_counter += 1;
                             }
                         }
-                        m.insert("Dictionary".into(), dict_name.into());
-                        dict_strings.push(m)
                     }
                 }
             };
@@ -138,9 +140,9 @@ impl Header {
 
         // reorder items if the header line has IDX key
         let mut fmt_gt_idx = 0;
-        for m in dict_strings.iter() {
+        for (k, m) in dict_strings.iter() {
             if (&m["Dictionary"] == "FORMAT") && (&m["ID"] == "GT") {
-                fmt_gt_idx = m["IDX"].parse::<usize>().unwrap();
+                fmt_gt_idx = *k;
             }
         }
 
@@ -153,25 +155,24 @@ impl Header {
     }
 
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
-        for m in self.dict_strings.iter() {
+        for (k, m) in self.dict_strings.iter() {
             if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
-                let idx = m["IDX"].parse::<usize>().unwrap();
-                return Some(idx);
+                return Some(*k);
             }
         }
         None
     }
 
     pub fn get_chrname(&self, idx: usize) -> &str {
-        &self.dict_contigs[idx]["ID"]
+        &self.dict_contigs[&idx]["ID"]
     }
     pub fn get_fmt_gt_id(&self) -> usize {
         self.fmt_gt_idx
     }
-    pub fn get_contigs(&self) -> &Vec<HashMap<String, String>> {
+    pub fn get_contigs(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_contigs
     }
-    pub fn get_dict_strings(&self) -> &Vec<HashMap<String, String>> {
+    pub fn get_dict_strings(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_strings
     }
     pub fn get_samples(&self) -> &Vec<String> {
