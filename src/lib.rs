@@ -435,7 +435,7 @@ impl Record {
             let (typ, n) = read_typed_descriptor_bytes(&mut reader);
             let width = bcf2_typ_width(typ);
             let s = reader.position() as usize;
-            let e = width * n as usize;
+            let e = s + width * n as usize;
             reader
                 .seek(std::io::SeekFrom::Current((e - s) as i64))
                 .unwrap();
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn test_find_fmt_idx() {
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let s = read_header(&mut f);
         let header = Header::from_string(&s);
         let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
@@ -553,13 +553,13 @@ mod tests {
         // read data via bcftools
         let samples_str = String::from_utf8({
             let mut cmd = std::process::Command::new("bcftools");
-            cmd.args(["query", "-l", "test.bcf"]);
+            cmd.args(["query", "-l", "testdata/test.bcf"]);
             cmd.output().unwrap().stdout
         })
         .unwrap();
 
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let s = read_header(&mut f);
         let header = Header::from_string(&s);
         let samples_str2 = header.get_samples().join("\n");
@@ -573,14 +573,14 @@ mod tests {
         // read data via bcftools
         let chrom_str = String::from_utf8({
             let mut cmd = std::process::Command::new("bcftools");
-            cmd.args(["query", "-f", r#"%CHROM\n"#, "test.bcf"]);
+            cmd.args(["query", "-f", r#"%CHROM\n"#, "testdata/test.bcf"]);
             // dbg!(&cmd);
             cmd.output().unwrap().stdout
         })
         .unwrap();
 
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let s = read_header(&mut f);
         let header = Header::from_string(&s);
         let mut record = Record::default();
@@ -604,7 +604,7 @@ mod tests {
     fn test_read_fmt_gt() {
         let gt_str = String::from_utf8(
             std::process::Command::new("bcftools")
-                .args(["query", "-f", r#"[\t%GT]\n"#, "test.bcf"])
+                .args(["query", "-f", r#"[\t%GT]\n"#, "testdata/test.bcf"])
                 .output()
                 .unwrap()
                 .stdout,
@@ -612,7 +612,7 @@ mod tests {
         .unwrap();
 
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let s = read_header(&mut f);
         let header = Header::from_string(&s);
         let mut record = Record::default();
@@ -626,8 +626,11 @@ mod tests {
                 assert_eq!(dot, false); // missing allele call
                 let mut sep = '\t';
                 if i % 2 == 1 {
-                    assert_eq!(phased, true); // gt call is phased
-                    sep = '|';
+                    if phased {
+                        sep = '|';
+                    } else {
+                        sep = '/';
+                    }
                 }
                 write!(gt_str2, "{sep}{allele}").unwrap();
             }
@@ -645,7 +648,7 @@ mod tests {
         // read data via bcftools
         let pos_str = String::from_utf8(
             std::process::Command::new("bcftools")
-                .args(["query", "-f", r#"%POS\n"#, "test.bcf"])
+                .args(["query", "-f", r#"%POS\n"#, "testdata/test.bcf"])
                 .output()
                 .unwrap()
                 .stdout,
@@ -653,7 +656,7 @@ mod tests {
         .unwrap();
 
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let _s = read_header(&mut f);
         let mut record = Record::default();
         let mut pos_str2 = Vec::<u8>::new();
@@ -673,7 +676,7 @@ mod tests {
         // read data via bcftools
         let allele_str = String::from_utf8(
             std::process::Command::new("bcftools")
-                .args(["query", "-f", r#"%REF,%ALT\n"#, "test.bcf"])
+                .args(["query", "-f", r#"%REF,%ALT\n"#, "testdata/test.bcf"])
                 .output()
                 .unwrap()
                 .stdout,
@@ -681,7 +684,7 @@ mod tests {
         .unwrap();
 
         // read data via bcf-reader
-        let mut f = smart_reader("test.bcf");
+        let mut f = smart_reader("testdata/test.bcf");
         let _s = read_header(&mut f);
         let mut record = Record::default();
         let mut allele_str2 = Vec::<u8>::new();
