@@ -70,7 +70,8 @@ impl Header {
         m.insert("Description".into(), r#""All filters passed""#.into());
         dict_strings.push(m);
         //
-        let mut idx_counter = 1;
+        let mut dict_str_idx_counter = 1;
+        let mut dict_contig_idx_counter = 0;
         for line in QuotedSplitter::new(text.trim_end_matches('\0').trim(), '\n', '"') {
             if line.starts_with("#CHROM") {
                 line.split("\t")
@@ -107,11 +108,27 @@ impl Header {
                 m.insert(k.into(), v.into());
             }
             match dict_name {
-                "contig" => dict_contigs.push(m),
+                "contig" => {
+                    if m.contains_key("IDX") {
+                        assert_eq!(dict_contig_idx_counter, 0, "if one dict string has IDX all of them should have IDX in the dictionary")
+                    } else {
+                        m.insert("IDX".into(), format!("{}", dict_contig_idx_counter));
+                        dict_contig_idx_counter += 1;
+                    }
+                    dict_contigs.push(m);
+                }
                 _ => {
                     if (dict_name == "FILTER") && (&m["ID"] == "PASS") {
                         // skip FILTER/PASS already added
                     } else {
+                        if ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name) {
+                            if m.contains_key("IDX") {
+                                assert_eq!(dict_str_idx_counter, 1, "if one dict string has IDX all of them should have IDX in the dictionary")
+                            } else {
+                                m.insert("IDX".into(), format!("{}", dict_str_idx_counter));
+                                dict_str_idx_counter += 1;
+                            }
+                        }
                         m.insert("Dictionary".into(), dict_name.into());
                         dict_strings.push(m)
                     }
@@ -121,9 +138,9 @@ impl Header {
 
         // reorder items if the header line has IDX key
         let mut fmt_gt_idx = 0;
-        for (idx, m) in dict_strings.iter().enumerate() {
+        for m in dict_strings.iter() {
             if (&m["Dictionary"] == "FORMAT") && (&m["ID"] == "GT") {
-                fmt_gt_idx = idx;
+                fmt_gt_idx = m["IDX"].parse::<usize>().unwrap();
             }
         }
 
@@ -136,8 +153,9 @@ impl Header {
     }
 
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
-        for (idx, m) in self.dict_strings.iter().enumerate() {
+        for m in self.dict_strings.iter() {
             if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
+                let idx = m["IDX"].parse::<usize>().unwrap();
                 return Some(idx);
             }
         }
