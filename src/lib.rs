@@ -449,14 +449,14 @@ where
 }
 
 #[derive(Default, Debug)]
-pub struct NumberIter<'r> {
+pub struct NumericValueIter<'r> {
     reader: std::io::Cursor<&'r [u8]>,
     typ: u8,
     len: usize,
     cur: usize,
 }
 
-impl<'r> Iterator for NumberIter<'r> {
+impl<'r> Iterator for NumericValueIter<'r> {
     type Item = NumericValue;
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur >= self.len {
@@ -491,8 +491,8 @@ impl<'r> Iterator for NumberIter<'r> {
 /// - typ: data type byte
 /// - n: total number of elements to iterate
 /// - buffer: the bytes buffer  
-pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumberIter {
-    NumberIter {
+pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumericValueIter {
+    NumericValueIter {
         reader: std::io::Cursor::new(buffer),
         typ,
         len: n,
@@ -668,8 +668,8 @@ impl Record {
     /// Returns an iterator over the genotype values in the record's FORMAT field.
     /// See example in `test_read_fmt_gt`
     /// If no FORMAT/GT field available, the returned iterator will have items.
-    pub fn fmt_gt(&self, header: &Header) -> NumberIter<'_> {
-        let mut it = NumberIter::default();
+    pub fn fmt_gt(&self, header: &Header) -> NumericValueIter<'_> {
+        let mut it = NumericValueIter::default();
         match header.get_fmt_gt_id() {
             None => it,
             Some(fmt_gt_id) => {
@@ -690,9 +690,9 @@ impl Record {
 
     /// Returns an iterator over all values for a field in the record's FORMATs (indiv).
     /// See example in `test_read_fmt_ad`
-    pub fn fmt_field(&self, fmt_key: usize) -> NumberIter<'_> {
+    pub fn fmt_field(&self, fmt_key: usize) -> NumericValueIter<'_> {
         // default iterator
-        let mut it = NumberIter::default();
+        let mut it = NumericValueIter::default();
 
         // find the right field for gt
         self.gt.iter().for_each(|e| {
