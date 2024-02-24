@@ -492,6 +492,10 @@ impl<'r> Iterator for NumberIter<'r> {
     }
 }
 
+/// Generate an iterator of numbers from a continuous bytes buffer
+/// - typ: data type byte
+/// - n: total number of elements to iterate
+/// - buffer: the bytes buffer  
 pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumberIter {
     NumberIter {
         reader: std::io::Cursor::new(buffer),
@@ -501,7 +505,7 @@ pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumberIter {
     }
 }
 
-/// if 0 is return, it means the string is missing
+/// Read a typed string from the reader to a Rust String
 pub fn read_typed_string<R>(reader: &mut R, buffer: &mut Vec<u8>) -> usize
 where
     R: std::io::Read + ReadBytesExt,
@@ -514,6 +518,8 @@ where
     n
 }
 
+/// read the header lines to a String
+/// use Header::from_string(text) to convert the string into structured data
 pub fn read_header<R>(reader: &mut R) -> String
 where
     R: std::io::Read + ReadBytesExt,
@@ -537,6 +543,7 @@ where
     String::from_utf8(text).unwrap()
 }
 
+/// Represents a record (a line or a site) in BCF file
 #[derive(Default, Debug)]
 pub struct Record {
     buf_shared: Vec<u8>,
@@ -559,7 +566,8 @@ pub struct Record {
     gt: Vec<(usize, u8, usize, Range<usize>)>,
 }
 impl Record {
-    /// read a record, copy bytes and separate fields
+    /// read a record (copy bytes from the reader to the record's interval
+    /// buffers), and separate fields
     pub fn read<R>(&mut self, reader: &mut R) -> Result<(), Box<dyn std::error::Error>>
     where
         R: std::io::Read + ReadBytesExt,
@@ -651,12 +659,19 @@ impl Record {
     pub fn chrom(&self) -> i32 {
         self.chrom
     }
+
+    /// Returns the reference length of the record.
     pub fn rlen(&self) -> i32 {
         self.rlen
     }
+
+    /// Returns the quality score of the record, if available
     pub fn qual(&self) -> Option<f32> {
         self.qual.float_val()
     }
+
+    /// Returns an iterator over the genotype values in the record's FORMAT field.
+    /// See example in `test_read_fmt_gt`
     pub fn fmt_gt(&self, header: &Header) -> NumberIter<'_> {
         let fmt_gt_id = header.get_fmt_gt_id();
         // default iterator
@@ -674,6 +689,9 @@ impl Record {
         });
         it
     }
+
+    /// Returns an iterator over all values for a field in the record's FORMATs (indiv).
+    /// See example in `test_read_fmt_ad`
     pub fn fmt_field(&self, fmt_key: usize) -> NumberIter<'_> {
         // default iterator
         let mut it = NumberIter::default();
@@ -690,20 +708,39 @@ impl Record {
         });
         it
     }
+
+    /// get 0-based position (bp) value
     pub fn pos(&self) -> i32 {
         self.pos
     }
+
+    /// Returns the ranges of bytes in buf_shared for all alleles in the record.
+    ///
+    /// Examples:
+    ///
+    /// // let ref_rng = &record.alleles()[0];
+    /// // let alt1_rng = &record.alleles()[1];
+    /// // let ref_str = std::str::from_utf8(&record.buf_shared()[ref_rng.start..ref_rng.end]).unwrap();
+    /// // let alt1_str =
+    /// //     std::str::from_utf8(&record.buf_shared()[alt1_rng.start..alt1_rng.end]).unwrap();
+    ///
     pub fn alleles(&self) -> &[Range<usize>] {
         &self.alleles[..]
     }
-    pub fn buf_gt(&self) -> &[u8] {
+
+    /// Returns the buffer containing indv (sample-level) information
+    pub fn buf_indiv(&self) -> &[u8] {
         &self.buf_indiv[..]
     }
-    pub fn buf_site(&self) -> &[u8] {
+
+    /// Returns the buffer containing the shared (site-level) information
+    pub fn buf_shared(&self) -> &[u8] {
         &self.buf_shared[..]
     }
 }
 
+/// Open a file from a path as a MultiGzDecoder or a BufReader depending on
+/// whether the file has the magic number for gzip (1f 8b)
 pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
     let mut f = std::fs::File::open(p.as_ref()).expect("can not open file");
     if (f.read_u8().expect("can not read first byte") == 0x1fu8)
