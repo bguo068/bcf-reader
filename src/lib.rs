@@ -251,59 +251,7 @@ impl Header {
     }
 }
 
-pub trait Bcf2Number {
-    fn is_missing(&self) -> bool;
-    fn is_end_of_vector(&self) -> bool;
-    fn is_reserved_value(&self) -> bool;
-}
-
-impl Bcf2Number for u8 {
-    fn is_missing(&self) -> bool {
-        *self == 0x80
-    }
-    fn is_end_of_vector(&self) -> bool {
-        *self == 0x81
-    }
-    fn is_reserved_value(&self) -> bool {
-        (*self >= 0x80) && (*self <= 0x87)
-    }
-}
-
-impl Bcf2Number for u16 {
-    fn is_missing(&self) -> bool {
-        *self == 0x8000
-    }
-    fn is_end_of_vector(&self) -> bool {
-        *self == 0x8001
-    }
-    fn is_reserved_value(&self) -> bool {
-        (*self >= 0x8000) && (*self <= 0x8007)
-    }
-}
-
-impl Bcf2Number for u32 {
-    fn is_missing(&self) -> bool {
-        *self == 0x80000000
-    }
-    fn is_end_of_vector(&self) -> bool {
-        *self == 0x80000001
-    }
-    fn is_reserved_value(&self) -> bool {
-        (*self >= 0x80000000) && (*self <= 0x80000007)
-    }
-}
-impl Bcf2Number for f32 {
-    fn is_missing(&self) -> bool {
-        (*self) as u32 == 0x7FC00000
-    }
-    fn is_end_of_vector(&self) -> bool {
-        (*self) as u32 == 0x7FC00001
-    }
-    fn is_reserved_value(&self) -> bool {
-        ((*self) as u32 >= 0x7FC00001) && ((*self) as u32 <= 0x7FC00007)
-    }
-}
-
+/// map bcf2 type to width in bytes
 pub fn bcf2_typ_width(typ: u8) -> usize {
     match typ {
         0x0 => 0,
@@ -316,51 +264,142 @@ pub fn bcf2_typ_width(typ: u8) -> usize {
     }
 }
 
-#[derive(Debug)]
-pub enum NumbericValue {
+#[derive(Debug, PartialEq)]
+/// Represents a numeric value in the context of the bcf-reader.
+pub enum NumericValue {
+    /// Represents an unsigned 8-bit integer value.
     U8(u8),
+    /// Represents an unsigned 16-bit integer value.
     U16(u16),
+    /// Represents an unsigned 32-bit integer value.
     U32(u32),
-    F32(f32),
+    /// Represents a 32-bit floating-point value.
+    F32(u32),
 }
 
-impl From<u8> for NumbericValue {
+impl Default for NumericValue {
+    fn default() -> Self {
+        NumericValue::U8(0)
+    }
+}
+
+impl From<u8> for NumericValue {
     fn from(value: u8) -> Self {
         Self::U8(value)
     }
 }
-impl From<u16> for NumbericValue {
+impl From<u16> for NumericValue {
     fn from(value: u16) -> Self {
         Self::U16(value)
     }
 }
-impl From<u32> for NumbericValue {
+impl From<u32> for NumericValue {
     fn from(value: u32) -> Self {
         Self::U32(value)
     }
 }
-impl From<f32> for NumbericValue {
-    fn from(value: f32) -> Self {
-        Self::F32(value)
-    }
-}
 
-impl NumbericValue {
+impl NumericValue {
+    fn is_missing(&self) -> bool {
+        match *self {
+            NumericValue::U8(x) => x == 0x80,
+            NumericValue::U16(x) => x == 0x8000,
+            NumericValue::U32(x) => x == 0x80000000,
+            NumericValue::F32(x) => x == 0x7F800001,
+        }
+    }
+
+    fn is_end_of_vector(&self) -> bool {
+        match *self {
+            NumericValue::U8(x) => x == 0x81,
+            NumericValue::U16(x) => x == 0x8001,
+            NumericValue::U32(x) => x == 0x80000001,
+            NumericValue::F32(x) => x == 0x7F800002,
+        }
+    }
+
+    fn as_f32(&self) -> Self {
+        match *self {
+            NumericValue::U32(x) => NumericValue::F32(x),
+            _ => panic!(),
+        }
+    }
+
+    /// Returns the integer value if the NumericValue is an unsigned integer and not missing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bcf_reader::NumericValue;
+    ///
+    /// let value = NumericValue::U8(42);
+    /// assert_eq!(value.int_val(), Some(42u32));
+    ///
+    /// let missing_value = NumericValue::U8(0x80u8);
+    /// assert_eq!(missing_value.int_val(), None);
+    /// ```
     pub fn int_val(&self) -> Option<u32> {
-        match *self {
-            Self::U8(x) if !x.is_missing() => Some(x as u32),
-            Self::U16(x) if !x.is_missing() => Some(x as u32),
-            Self::U32(x) if !x.is_missing() => Some(x as u32),
-            _ => None,
-        }
-    }
-    pub fn float_val(&self) -> Option<f32> {
-        match *self {
-            Self::F32(x) if !x.is_missing() => Some(x),
-            _ => None,
+        if self.is_end_of_vector() || self.is_missing() {
+            None
+        } else {
+            match *self {
+                Self::U8(x) => Some(x as u32),
+                Self::U16(x) => Some(x as u32),
+                Self::U32(x) => Some(x as u32),
+                _ => None,
+            }
         }
     }
 
+    /// Returns the floating-point value if the NumericValue is a 32-bit float and not missing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bcf_reader::NumericValue;
+    ///
+    /// let value = NumericValue::F32(3.14f32.to_bits());
+    /// assert_eq!(value.float_val(), Some(3.14f32));
+    ///
+    /// let missing_value = NumericValue::F32(0x7F800001);
+    /// let missing_value2 = NumericValue::F32(0x7F800001);
+    /// assert_eq!(missing_value.float_val(), missing_value2.float_val()) ;
+    /// dbg!(&missing_value);
+    /// assert_eq!(missing_value.float_val(), None);
+    /// ```
+    pub fn float_val(&self) -> Option<f32> {
+        if self.is_end_of_vector() || self.is_missing() {
+            None
+        } else {
+            match *self {
+                Self::F32(x) => Some(f32::from_bits(x)),
+                _ => panic!(),
+            }
+        }
+    }
+
+    /// Returns a tuple representing the GT value.
+    ///
+    /// The tuple contains the following elements:
+    /// - `noploidy`: A boolean indicating if the ploidy is missing (for individuals with fewer ploids compared to individuals with the maximum ploidy).
+    /// - `dot`: A boolean indicating if the genotype call is a dot.
+    /// - `phased`: A boolean indicating if the allele is phased (the first allele of a call is always unphased).
+    /// - `allele`: The allele value (index).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bcf_reader::NumericValue;
+    ///
+    /// let value = NumericValue::U8(3);
+    /// assert_eq!(value.gt_val(), (false, false, true, 0));
+    ///
+    /// let value = NumericValue::U8(5);
+    /// assert_eq!(value.gt_val(), (false, false, true, 1));
+    ///
+    /// let missing_value = NumericValue::U8(0);
+    /// assert_eq!(missing_value.gt_val(), (false, true, false, u32::MAX));
+    /// ```
     pub fn gt_val(&self) -> (bool, bool, bool, u32) {
         let mut noploidy = false;
         let mut dot = false;
@@ -423,7 +462,7 @@ pub struct NumberIter<'r> {
 }
 
 impl<'r> Iterator for NumberIter<'r> {
-    type Item = NumbericValue;
+    type Item = NumericValue;
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur >= self.len {
             None
@@ -444,7 +483,8 @@ impl<'r> Iterator for NumberIter<'r> {
                 }
                 5 => {
                     self.cur += 1;
-                    Some(self.reader.read_f32::<LittleEndian>().unwrap().into())
+                    let val = self.reader.read_u32::<LittleEndian>().unwrap();
+                    Some(NumericValue::from(val).as_f32())
                 }
                 _ => panic!(),
             }
@@ -504,7 +544,7 @@ pub struct Record {
     chrom: i32,
     pos: i32,
     rlen: i32,
-    qual: f32,
+    qual: NumericValue,
     n_info: u16,
     n_allele: u16,
     n_sample: u32,
@@ -545,7 +585,8 @@ impl Record {
         self.chrom = reader.read_i32::<LittleEndian>().unwrap();
         self.pos = reader.read_i32::<LittleEndian>().unwrap();
         self.rlen = reader.read_i32::<LittleEndian>().unwrap();
-        self.qual = reader.read_f32::<LittleEndian>().unwrap();
+        let qual_u32 = reader.read_u32::<LittleEndian>().unwrap();
+        self.qual = NumericValue::from(qual_u32).as_f32();
         self.n_info = reader.read_u16::<LittleEndian>().unwrap();
         self.n_allele = reader.read_u16::<LittleEndian>().unwrap();
         let combined = reader.read_u32::<LittleEndian>().unwrap();
@@ -614,10 +655,7 @@ impl Record {
         self.rlen
     }
     pub fn qual(&self) -> Option<f32> {
-        match self.qual.is_missing() {
-            true => None,
-            false => Some(self.qual),
-        }
+        self.qual.float_val()
     }
     pub fn fmt_gt(&self, header: &Header) -> NumberIter<'_> {
         let fmt_gt_id = header.get_fmt_gt_id();
