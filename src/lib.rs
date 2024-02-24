@@ -421,7 +421,7 @@ where
     // read text length
     let l_length = reader.read_u32::<LittleEndian>().unwrap();
     let mut text = vec![0u8; l_length as usize];
-    reader.read(&mut text).unwrap();
+    reader.read_exact(&mut text).unwrap();
 
     String::from_utf8(text).unwrap()
 }
