@@ -428,8 +428,8 @@ where
 
 #[derive(Default, Debug)]
 pub struct Record {
-    buf_site: Vec<u8>,
-    buf_gt: Vec<u8>,
+    buf_shared: Vec<u8>,
+    buf_indiv: Vec<u8>,
     chrom: i32,
     pos: i32,
     rlen: i32,
@@ -460,17 +460,17 @@ impl Record {
             Err(_x) => Err(_x)?,
         };
         l_indv = reader.read_u32::<LittleEndian>()?;
-        self.buf_site.resize(l_shared as usize, 0u8);
-        self.buf_gt.resize(l_indv as usize, 0u8);
-        reader.read_exact(self.buf_site.as_mut_slice()).unwrap();
-        reader.read_exact(self.buf_gt.as_mut_slice()).unwrap();
-        self.parse_site_fields();
-        self.parse_gt_fields();
+        self.buf_shared.resize(l_shared as usize, 0u8);
+        self.buf_indiv.resize(l_indv as usize, 0u8);
+        reader.read_exact(self.buf_shared.as_mut_slice()).unwrap();
+        reader.read_exact(self.buf_indiv.as_mut_slice()).unwrap();
+        self.parse_shared();
+        self.parse_indv();
         Ok(())
     }
-    /// parse shared fields, complicated field will need further processing
-    fn parse_site_fields(&mut self) {
-        let mut reader = std::io::Cursor::new(self.buf_site.as_slice());
+    /// parse shared fields
+    fn parse_shared(&mut self) {
+        let mut reader = std::io::Cursor::new(self.buf_shared.as_slice());
         self.chrom = reader.read_i32::<LittleEndian>().unwrap();
         self.pos = reader.read_i32::<LittleEndian>().unwrap();
         self.rlen = reader.read_i32::<LittleEndian>().unwrap();
@@ -518,9 +518,9 @@ impl Record {
             self.info.push((info_key as usize, typ, n as usize, s..e));
         }
     }
-    /// parse shared fields, complicated field will need further processing
-    fn parse_gt_fields(&mut self) {
-        let mut reader = std::io::Cursor::new(self.buf_gt.as_slice());
+    /// parse indiv fields, complicated field will need further processing
+    fn parse_indv(&mut self) {
+        let mut reader = std::io::Cursor::new(self.buf_indiv.as_slice());
         self.gt.clear();
         for _idx in 0..(self.n_fmt as usize) {
             let fmt_key = read_single_typed_integer(&mut reader);
@@ -559,7 +559,7 @@ impl Record {
                 it = iter_typed_integers(
                     e.1,
                     e.2 as usize * self.n_sample as usize,
-                    &self.buf_gt[e.3.start..e.3.end],
+                    &self.buf_indiv[e.3.start..e.3.end],
                 );
             }
         });
@@ -575,7 +575,7 @@ impl Record {
                 it = iter_typed_integers(
                     e.1,
                     e.2 as usize * self.n_sample as usize,
-                    &self.buf_gt[e.3.start..e.3.end],
+                    &self.buf_indiv[e.3.start..e.3.end],
                 );
             }
         });
@@ -588,10 +588,10 @@ impl Record {
         &self.alleles[..]
     }
     pub fn buf_gt(&self) -> &[u8] {
-        &self.buf_gt[..]
+        &self.buf_indiv[..]
     }
     pub fn buf_site(&self) -> &[u8] {
-        &self.buf_site[..]
+        &self.buf_shared[..]
     }
 }
 
@@ -810,7 +810,7 @@ mod tests {
 
         while let Ok(_) = record.read(&mut f) {
             for rng in record.alleles.iter() {
-                let slice = &record.buf_site[rng.start..rng.end];
+                let slice = &record.buf_shared[rng.start..rng.end];
                 allele_str2.extend(slice);
                 allele_str2.push(b',');
             }
