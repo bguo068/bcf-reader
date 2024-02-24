@@ -25,7 +25,8 @@ impl<'a> QuotedSplitter<'a> {
     /// ```
     /// use bcf_reader::QuotedSplitter;
     /// let input_string = "hello,\"world, this is fun\",test";
-    /// let splitter = QuotedSplitter::new(input_string, ',', '"');
+    /// let result: Vec<_> = QuotedSplitter::new(input_string, ',', '"').collect();
+    /// assert_eq!(result, vec!["hello", "\"world, this is fun\"", "test"]);
     /// ```
     pub fn new(buffer: &'a str, separator: char, quote: char) -> Self {
         Self {
@@ -65,13 +66,6 @@ impl<'a> Iterator for QuotedSplitter<'a> {
             None
         }
     }
-}
-
-#[test]
-fn test_quoted_splitter() {
-    let input_string = "hello,\"world, this is fun\",test";
-    let result: Vec<_> = QuotedSplitter::new(input_string, ',', '"').collect();
-    assert_eq!(result, vec!["hello", "\"world, this is fun\"", "test"]);
 }
 
 /// Represents a header of a BCF file.
