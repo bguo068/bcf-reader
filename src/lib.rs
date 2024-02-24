@@ -238,8 +238,8 @@ pub fn bcf2_typ_width(typ: u8) -> usize {
         0x0 => 0,
         0x1 => 1,
         0x2 => 2,
-        0x3 => 3,
-        0x5 => 3,
+        0x3 => 4,
+        0x5 => 4,
         0x7 => 1,
         _ => panic!(),
     }
