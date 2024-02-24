@@ -247,6 +247,14 @@ impl Header {
 }
 
 /// map bcf2 type to width in bytes
+///
+/// `typ`: 
+/// - 0: MISSING
+/// - 1: u8 (1 byte)
+/// - 2: u16 (2 bytes)
+/// - 3: u32 (3 bytes)
+/// - 5: f32 (4 bytes)
+/// - 7: c-char (u8, 1 byte)
 pub fn bcf2_typ_width(typ: u8) -> usize {
     match typ {
         0x0 => 0,
@@ -268,7 +276,8 @@ pub enum NumericValue {
     U16(u16),
     /// Represents an unsigned 32-bit integer value.
     U32(u32),
-    /// Represents a 32-bit floating-point value.
+    /// Represents a 32-bit floating-point value. (Note use a u32 to
+    /// hold the bits for the f32 value
     F32(u32),
 }
 
