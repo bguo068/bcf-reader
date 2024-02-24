@@ -101,7 +101,7 @@ fn test_quoted_splitter() {
 ///
 /// assert_eq!(header.get_idx_from_dictionary_str("INFO", "DP"), Some(2));
 /// assert_eq!(header.get_chrname(0), "chr1");
-/// assert_eq!(header.get_fmt_gt_id(), 3);
+/// assert_eq!(header.get_fmt_gt_id(), Some(3));
 /// assert_eq!(header.get_contigs().len(), 1);
 /// assert_eq!(header.get_dict_strings().len(), 4);
 /// assert_eq!(header.get_samples().len(), 2);
@@ -111,7 +111,7 @@ pub struct Header {
     dict_strings: HashMap<usize, HashMap<String, String>>,
     dict_contigs: HashMap<usize, HashMap<String, String>>,
     samples: Vec<String>,
-    fmt_gt_idx: usize,
+    fmt_gt_idx: Option<usize>,
 }
 impl Header {
     /// parse header lines to structured data `Header`
@@ -135,7 +135,8 @@ impl Header {
                     .skip(9)
                     .for_each(|s| samples.push(s.into()));
                 continue;
-            } else if line.trim().len() == 0 {
+            }
+            if line.trim().len() == 0 {
                 continue;
             }
             let mut it = QuotedSplitter::new(line.strip_prefix("##").unwrap(), '=', '"');
@@ -196,10 +197,10 @@ impl Header {
         }
 
         // find fmt_key for FORMAT/GT for convenience
-        let mut fmt_gt_idx = 0;
+        let mut fmt_gt_idx = None;
         for (k, m) in dict_strings.iter() {
             if (&m["Dictionary"] == "FORMAT") && (&m["ID"] == "GT") {
-                fmt_gt_idx = *k;
+                fmt_gt_idx = Some(*k);
             }
         }
 
@@ -227,7 +228,7 @@ impl Header {
     }
 
     /// Get key for FORMAT/GT field.
-    pub fn get_fmt_gt_id(&self) -> usize {
+    pub fn get_fmt_gt_id(&self) -> Option<usize> {
         self.fmt_gt_idx
     }
 
@@ -672,22 +673,25 @@ impl Record {
 
     /// Returns an iterator over the genotype values in the record's FORMAT field.
     /// See example in `test_read_fmt_gt`
+    /// If no FORMAT/GT field available, the returned iterator will have items.
     pub fn fmt_gt(&self, header: &Header) -> NumberIter<'_> {
-        let fmt_gt_id = header.get_fmt_gt_id();
-        // default iterator
         let mut it = NumberIter::default();
-
-        // find the right field for gt
-        self.gt.iter().for_each(|e| {
-            if e.0 == fmt_gt_id {
-                it = iter_typed_integers(
-                    e.1,
-                    e.2 as usize * self.n_sample as usize,
-                    &self.buf_indiv[e.3.start..e.3.end],
-                );
+        match header.get_fmt_gt_id() {
+            None => it,
+            Some(fmt_gt_id) => {
+                // find the right field for gt
+                self.gt.iter().for_each(|e| {
+                    if e.0 == fmt_gt_id {
+                        it = iter_typed_integers(
+                            e.1,
+                            e.2 as usize * self.n_sample as usize,
+                            &self.buf_indiv[e.3.start..e.3.end],
+                        );
+                    }
+                });
+                it
             }
-        });
-        it
+        }
     }
 
     /// Returns an iterator over all values for a field in the record's FORMATs (indiv).
@@ -765,7 +769,7 @@ mod tests {
         let s = read_header(&mut f);
         let header = Header::from_string(&s);
         let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
-        assert_eq!(key_found, header.fmt_gt_idx);
+        assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
     }
 
     #[test]
