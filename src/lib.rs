@@ -2,6 +2,8 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use std::ops::Range;
 use std::{collections::HashMap, io::Seek};
 
+/// An iterator used to split a `str` by a separator with separators within pairs
+/// of quotes ignored.
 pub struct QuotedSplitter<'a> {
     data: &'a str,
     in_quotes: bool,
@@ -10,6 +12,21 @@ pub struct QuotedSplitter<'a> {
 }
 
 impl<'a> QuotedSplitter<'a> {
+    /// Creates a new `QuotedSplitter` iterator.
+    ///
+    /// # Arguments
+    ///
+    /// * `buffer` - The input string to be split.
+    /// * `separator` - The separator character used to split the string.
+    /// * `quote` - The quote character used to ignore separators within quotes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bcf_reader::QuotedSplitter;
+    /// let input_string = "hello,\"world, this is fun\",test";
+    /// let splitter = QuotedSplitter::new(input_string, ',', '"');
+    /// ```
     pub fn new(buffer: &'a str, separator: char, quote: char) -> Self {
         Self {
             data: buffer,
@@ -22,6 +39,13 @@ impl<'a> QuotedSplitter<'a> {
 
 impl<'a> Iterator for QuotedSplitter<'a> {
     type Item = &'a str;
+
+    /// Advances the iterator and returns the next split substring.
+    ///
+    /// # Returns
+    ///
+    /// * `Some(&str)` - The next split substring.
+    /// * `None` - If there are no more substrings to split.
     fn next(&mut self) -> Option<Self::Item> {
         for (idx, ch) in self.data.char_indices() {
             if ch == self.quote {
@@ -50,6 +74,38 @@ fn test_quoted_splitter() {
     assert_eq!(result, vec!["hello", "\"world, this is fun\"", "test"]);
 }
 
+/// Represents a header of a BCF file.
+///
+/// The `Header` struct contains information about the dictionar of strings and
+/// contigs, samples, and the index of the FORMAT field "GT".  It provides
+/// methods to parse a header from a string, retrieve the index of a dictionary
+/// string, retrieve the chromosome name by index, retrieve the index of the
+/// FORMAT field "GT", and access the dictionary strings, contigs, and samples.
+///
+/// # Examples
+///
+/// ```
+/// use bcf_reader::Header;
+///
+/// let header_text =concat!(
+///     r#"##fileformat=VCFv4.3"#, "\n",
+///     r#"##FILTER=<ID=PASS,Description="All filters passed">"#,"\n",
+///     r#"##FILTER=<ID=FAILED1,Description="failed due to something">"#,"\n",
+///     r#"##contig=<ID=chr1,length=123123123>"#,"\n",
+///     r#"##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,"\n",
+///     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,"\n",
+///     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2","\n",
+/// );
+///
+/// let header = Header::from_string(&header_text);
+///
+/// assert_eq!(header.get_idx_from_dictionary_str("INFO", "DP"), Some(2));
+/// assert_eq!(header.get_chrname(0), "chr1");
+/// assert_eq!(header.get_fmt_gt_id(), 3);
+/// assert_eq!(header.get_contigs().len(), 1);
+/// assert_eq!(header.get_dict_strings().len(), 4);
+/// assert_eq!(header.get_samples().len(), 2);
+/// ```
 #[derive(Debug)]
 pub struct Header {
     dict_strings: HashMap<usize, HashMap<String, String>>,
@@ -58,12 +114,13 @@ pub struct Header {
     fmt_gt_idx: usize,
 }
 impl Header {
+    /// parse header lines to structured data `Header`
     pub fn from_string(text: &str) -> Self {
         let mut dict_strings = HashMap::<usize, HashMap<String, String>>::new();
         let mut dict_contigs = HashMap::<usize, HashMap<String, String>>::new();
         let mut samples = Vec::<String>::new();
 
-        // implicit FILTER/PASS header lines
+        // implicit FILTER/PASS header line
         let mut m = HashMap::<String, String>::new();
         m.insert("Dictionary".into(), "FILTER".into());
         m.insert("ID".into(), "PASS".into());
@@ -138,7 +195,7 @@ impl Header {
             };
         }
 
-        // reorder items if the header line has IDX key
+        // find fmt_key for FORMAT/GT for convenience
         let mut fmt_gt_idx = 0;
         for (k, m) in dict_strings.iter() {
             if (&m["Dictionary"] == "FORMAT") && (&m["ID"] == "GT") {
@@ -154,6 +211,7 @@ impl Header {
         }
     }
 
+    /// Find the key (offset in header line) for a given INFO/xx or FILTER/xx or FORMAT/xx field.
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
         for (k, m) in self.dict_strings.iter() {
             if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
@@ -163,18 +221,31 @@ impl Header {
         None
     }
 
+    /// Get chromosome name from the contig index
     pub fn get_chrname(&self, idx: usize) -> &str {
         &self.dict_contigs[&idx]["ID"]
     }
+
+    /// Get key for FORMAT/GT field.
     pub fn get_fmt_gt_id(&self) -> usize {
         self.fmt_gt_idx
     }
+
+    /// Get hashmap of hashmap of dictionary of contigs
+    /// outer key: contig_idx
+    /// inner key: is the key of the dictionary of contig, such as 'ID', 'Description'
     pub fn get_contigs(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_contigs
     }
+
+    /// Get hashmap of hashmap of dictionary of strings
+    /// outer key: item_idx, for FILTER/xx, FORMAT/xx, INFO/xx,
+    /// inner key: is the key of the dictionary of string, such as 'ID', 'Description'
     pub fn get_dict_strings(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_strings
     }
+
+    /// Get samples names from sample idx
     pub fn get_samples(&self) -> &Vec<String> {
         &self.samples
     }
