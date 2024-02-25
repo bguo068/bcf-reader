@@ -1,3 +1,85 @@
+//! # bcf_reader
+//! This is an attempt to create a small, lightweight, pure-Rust library to allow
+//! efficient, cross-platform access to genotype data in BCF files.
+//!
+//! Currently, the `rust_htslib` crate works only on Linux and macOS (not Windows?).
+//! The noodles crate is a pure Rust library for many bioinformatic file formats and
+//! works across Windows, Linux, and macOS. However, the `noodles` API for reading
+//! genotype data from BCF files can be slow due to its memory allocation patterns.
+//! Additionally, both crates have a large number of dependencies, as they provide
+//! many features and support a wide range of file formats.
+//!
+//! One way to address the memory allocation and dependency issues is to manually
+//! parse BCF records according to its specification
+//! (`<https://samtools.github.io/hts-specs/VCFv4.2.pdf>`) and use iterators whenever
+//! possible, especially for the per-sample fields, like GT and AD.
+//!
+//! Note: This crate is in its early stages of development.
+//!
+//! ## Usage
+//! ```
+//! use bcf_reader::*;
+//! let mut reader = smart_reader("testdata/test2.bcf");
+//! let header = Header::from_string(&read_header(&mut reader));
+//! // find key for a field in INFO or FORMAT or FILTER
+//! let key = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
+//! // access header dictionary
+//! let d = &header.dict_strings()[&key];
+//! assert_eq!(d["ID"], "GT");
+//! assert_eq!(d["Dictionary"], "FORMAT");
+//! /// get chromosome name
+//! assert_eq!(header.get_chrname(0), "Pf3D7_01_v3");
+//! let fmt_ad_key = header.get_idx_from_dictionary_str("FORMAT", "AD").expect("FORMAT/AD not found");
+//! let info_af_key = header.get_idx_from_dictionary_str("INFO", "AF").expect("INFO/AF not found");
+//!
+//! // this can be and should be reused to reduce allocation
+//! let mut record = Record::default();
+//! while let Ok(_) = record.read(&mut reader){
+//!     let pos = record.pos();
+//!
+//!     // use byte ranges and shared buffer to get allele string values
+//!     let allele_byte_ranges = record.alleles();
+//!     let share_buf = record.buf_shared();
+//!     let ref_rng = &allele_byte_ranges[0];
+//!     let ref_allele_str = std::str::from_utf8(&share_buf[ref_rng.start..ref_rng.end]).unwrap();
+//!     let alt1_rng = &allele_byte_ranges[1];
+//!     let alt1_allele_str = std::str::from_utf8(&share_buf[alt1_rng.start..alt1_rng.end]).unwrap();
+//!     // ...
+//!
+//!     // access FORMAT/GT via iterator
+//!     for nv in record.fmt_gt(&header){
+//!         let (has_ploidy, is_missing, is_phased, allele_idx) = nv.gt_val();
+//!         // ...
+//!     }
+//!
+//!     // access FORMAT/AD via iterator
+//!     for nv in record.fmt_field(fmt_ad_key){
+//!         match nv.int_val(){
+//!             None => {}
+//!             Some(ad) => {
+//!             // ...
+//!             }
+//!         }
+//!         // ...
+//!     }
+//!
+//!     // access FILTERS via itertor
+//!     record.filters().for_each(|nv| {
+//!        let filter_key = nv.int_val().unwrap() as usize;
+//!        let dict_string_map = &header.dict_strings()[&filter_key];
+//!        let filter_name = &dict_string_map["ID"];
+//!        // ...
+//!     });
+//!
+//!     // access INFO/AF via itertor
+//!     record.info_field_numeric(info_af_key).for_each(|nv| {
+//!         let af = nv.float_val().unwrap();
+//!         // ...
+//!    });
+//! }
+//! ```
+//!
+//! More examples to access each field/column are available in docs of [`Record`] and [`Header`].
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::ops::Range;
 use std::{collections::HashMap, io::Seek};
@@ -96,8 +178,8 @@ impl<'a> Iterator for QuotedSplitter<'a> {
 /// assert_eq!(header.get_idx_from_dictionary_str("INFO", "DP"), Some(2));
 /// assert_eq!(header.get_chrname(0), "chr1");
 /// assert_eq!(header.get_fmt_gt_id(), Some(3));
-/// assert_eq!(header.get_contigs().len(), 1);
-/// assert_eq!(header.get_dict_strings().len(), 4);
+/// assert_eq!(header.dict_contigs().len(), 1);
+/// assert_eq!(header.dict_strings().len(), 4);
 /// assert_eq!(header.get_samples().len(), 2);
 /// ```
 #[derive(Debug)]
@@ -207,6 +289,16 @@ impl Header {
     }
 
     /// Find the key (offset in header line) for a given INFO/xx or FILTER/xx or FORMAT/xx field.
+    ///
+    /// Example:
+    /// ```
+    ///  use bcf_reader::*;
+    ///  let mut f = smart_reader("testdata/test.bcf");
+    ///  let s = read_header(&mut f);
+    ///  let header = Header::from_string(&s);
+    ///  let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
+    ///  assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
+    /// ```
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
         for (k, m) in self.dict_strings.iter() {
             if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
@@ -229,18 +321,35 @@ impl Header {
     /// Get hashmap of hashmap of dictionary of contigs
     /// outer key: contig_idx
     /// inner key: is the key of the dictionary of contig, such as 'ID', 'Description'
-    pub fn get_contigs(&self) -> &HashMap<usize, HashMap<String, String>> {
+    pub fn dict_contigs(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_contigs
     }
 
     /// Get hashmap of hashmap of dictionary of strings
     /// outer key: item_idx, for FILTER/xx, FORMAT/xx, INFO/xx,
     /// inner key: is the key of the dictionary of string, such as 'ID', 'Description'
-    pub fn get_dict_strings(&self) -> &HashMap<usize, HashMap<String, String>> {
+    pub fn dict_strings(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_strings
     }
 
     /// Get samples names from sample idx
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// // read data generated by bcftools
+    /// // bcftools query -l test.bcf | bgzip -c > test_samples.gz
+    /// let mut samples_str = String::new();
+    /// smart_reader("./testdata/test_samples.gz")
+    ///     .read_to_string(&mut samples_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let samples_str2 = header.get_samples().join("\n");
+    /// // compare bcftools results and bcf-reader results
+    /// assert_eq!(samples_str.trim(), samples_str2.trim());
+    /// ```
     pub fn get_samples(&self) -> &Vec<String> {
         &self.samples
     }
@@ -457,6 +566,9 @@ where
     }
 }
 
+/// Iterator for accessing arrays of numeric values (integers or floats)
+/// directly from the buffer bytes without building Vec<_> or Vec<Vec<_>>
+/// for each site.
 #[derive(Default, Debug)]
 pub struct NumericValueIter<'r> {
     reader: std::io::Cursor<&'r [u8]>,
@@ -660,6 +772,34 @@ impl Record {
     }
 
     /// get chromosome offset
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// use std::io::Write;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '%CHROM\n' test.bcf | bgzip -c > test_chrom.gz
+    /// let mut chrom_str = String::new();
+    /// smart_reader("testdata/test_chrom.gz")
+    ///     .read_to_string(&mut chrom_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let mut record = Record::default();
+    /// let mut chrom_str2 = Vec::<u8>::new();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     write!(
+    ///         chrom_str2,
+    ///         "{}\n",
+    ///         header.get_chrname(record.chrom() as usize)
+    ///     )
+    ///     .unwrap();
+    /// }
+    /// let chrom_str2 = String::from_utf8(chrom_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// assert_eq!(chrom_str, chrom_str2);
+    /// ```
     pub fn chrom(&self) -> i32 {
         self.chrom
     }
@@ -674,9 +814,57 @@ impl Record {
         self.qual.float_val()
     }
 
+    pub fn n_allele(&self) -> u16 {
+        self.n_allele
+    }
+
     /// Returns an iterator over the genotype values in the record's FORMAT field.
-    /// See example in `test_read_fmt_gt`
     /// If no FORMAT/GT field available, the returned iterator will have items.
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// use std::io::Write;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
+    /// let mut gt_str = String::new();
+    /// smart_reader("testdata/test_gt.gz")
+    ///     .read_to_string(&mut gt_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let mut record = Record::default();
+    /// let mut gt_str2 = Vec::<u8>::new();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     for (i, bn) in record.fmt_gt(&header).enumerate() {
+    ///         let (noploidy, dot, phased, allele) = bn.gt_val();
+    ///         assert_eq!(noploidy, false); // missing ploidy
+    ///         let mut sep = '\t';
+    ///         if i % 2 == 1 {
+    ///             if phased {
+    ///                 sep = '|';
+    ///             } else {
+    ///                 sep = '/';
+    ///             }
+    ///         }
+    ///         if dot {
+    ///             write!(gt_str2, "{sep}.").unwrap();
+    ///         } else {
+    ///             write!(gt_str2, "{sep}{allele}").unwrap();
+    ///         }
+    ///     }
+    ///     write!(gt_str2, "\n").unwrap();
+    /// }
+    /// let gt_str2 = String::from_utf8(gt_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// for (a, b) in gt_str
+    ///     .split(|c| (c == '\n') || (c == '\t'))
+    ///     .zip(gt_str2.split(|c| (c == '\n') || (c == '\t')))
+    /// {
+    ///     assert_eq!(a, b);
+    /// }
+    /// ```
     pub fn fmt_gt(&self, header: &Header) -> NumericValueIter<'_> {
         let mut it = NumericValueIter::default();
         match header.get_fmt_gt_id() {
@@ -698,7 +886,51 @@ impl Record {
     }
 
     /// Returns an iterator over all values for a field in the record's FORMATs (indiv).
-    /// See example in `test_read_fmt_ad`
+    ///
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// use std::io::Write;
+    /// // read data generated by bcftools
+    /// //  bcftools query -f '[\t%AD]\n' test.bcf | bgzip -c > test_ad.gz
+    /// let mut ad_str = String::new();
+    /// smart_reader("testdata/test_ad.gz")
+    ///     .read_to_string(&mut ad_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let mut record = Record::default();
+    /// let mut ad_str2 = Vec::<u8>::new();
+    /// let ad_filed_key = header.get_idx_from_dictionary_str("FORMAT", "AD").unwrap();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     for (i, val) in record.fmt_field(ad_filed_key).enumerate() {
+    ///         if i % record.n_allele() as usize == 0 {
+    ///             if ad_str2.last().map(|c| *c == b',') == Some(true) {
+    ///                 ad_str2.pop(); // trim last allele separator
+    ///             }
+    ///             ad_str2.push(b'\t'); // sample separator
+    ///         }
+    ///         match val.int_val() {
+    ///             None => {}
+    ///             Some(ad) => {
+    ///                 write!(ad_str2, "{ad},").unwrap(); // allele separator
+    ///             }
+    ///         }
+    ///     }
+    ///     // site separator
+    ///     *ad_str2.last_mut().unwrap() = b'\n'; // sample separator
+    /// }
+    /// let ad_str2 = String::from_utf8(ad_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// for (a, b) in ad_str
+    ///     .split(|c| (c == '\n') || (c == '\t'))
+    ///     .zip(ad_str2.split(|c| (c == '\n') || (c == '\t')))
+    /// {
+    ///     assert_eq!(a, b);
+    /// }
+    /// ```
     pub fn fmt_field(&self, fmt_key: usize) -> NumericValueIter<'_> {
         // default iterator
         let mut it = NumericValueIter::default();
@@ -717,26 +949,93 @@ impl Record {
     }
 
     /// get 0-based position (bp) value
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '%POS\n' test.bcf | bgzip -c > test_pos.gz
+    /// let mut pos_str = String::new();
+    /// smart_reader("testdata/test_pos.gz")
+    ///     .read_to_string(&mut pos_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let _s = read_header(&mut f);
+    /// let mut record = Record::default();
+    /// let mut pos_str2 = Vec::<u8>::new();
+    /// use std::io::Write;
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     write!(pos_str2, "{}\n", record.pos() + 1).unwrap();
+    /// }
+    /// let pos_str2 = String::from_utf8(pos_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// assert_eq!(pos_str, pos_str2);
+    /// ```
     pub fn pos(&self) -> i32 {
         self.pos
     }
 
     /// Returns the ranges of bytes in buf_shared for all alleles in the record.
-    ///
-    /// Examples:
-    ///
-    /// // let ref_rng = &record.alleles()[0];
-    /// // let alt1_rng = &record.alleles()[1];
-    /// // let ref_str = std::str::from_utf8(&record.buf_shared()[ref_rng.start..ref_rng.end]).unwrap();
-    /// // let alt1_str =
-    /// //     std::str::from_utf8(&record.buf_shared()[alt1_rng.start..alt1_rng.end]).unwrap();
-    ///
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '%REF,%ALT\n' test.bcf | bgzip -c > test_allele.gz
+    /// let mut allele_str = String::new();
+    /// smart_reader("testdata/test_allele.gz")
+    ///     .read_to_string(&mut allele_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let _s = read_header(&mut f);
+    /// let mut record = Record::default();
+    /// let mut allele_str2 = Vec::<u8>::new();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     for rng in record.alleles().iter() {
+    ///         let slice = &record.buf_shared()[rng.start..rng.end];
+    ///         allele_str2.extend(slice);
+    ///         allele_str2.push(b',');
+    ///     }
+    ///     *allele_str2.last_mut().unwrap() = b'\n';
+    /// }
+    /// let allele_str2 = String::from_utf8(allele_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// assert_eq!(allele_str, allele_str2);
+    /// ```
     pub fn alleles(&self) -> &[Range<usize>] {
         &self.alleles[..]
     }
 
     /// Return an iterator of numeric values for an INFO/xxx field.
-    /// If the key is not found, the return iterator will have a zero length.
+    /// If the key is not found, the returned iterator will have a zero length.
+    ///
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// use std::io::Write;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '%INFO/AF\n' testdata/test2.bcf | bgzip -c > testdata/test2_info_af.gz
+    /// let mut info_af_str = String::new();
+    /// smart_reader("testdata/test2_info_af.gz")
+    ///     .read_to_string(&mut info_af_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test2.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let mut record = Record::default();
+    /// let mut info_af_str2 = Vec::<u8>::new();
+    /// let info_af_key = header.get_idx_from_dictionary_str("INFO", "AF").unwrap();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     record.info_field_numeric(info_af_key).for_each(|nv| {
+    ///         let af = nv.float_val().unwrap();
+    ///         write!(info_af_str2, "{af},").unwrap();
+    ///     });
+    ///     *info_af_str2.last_mut().unwrap() = b'\n'; // line separators
+    /// }
+    /// let filter_str2 = String::from_utf8(info_af_str2).unwrap();
+    /// assert_eq!(info_af_str, filter_str2);
+    /// ```
     pub fn info_field_numeric(&self, info_key: usize) -> NumericValueIter {
         // default
         let mut it = NumericValueIter {
@@ -778,6 +1077,36 @@ impl Record {
 
     /// iterate an integer for each filter key.
     /// If the length of the iterator is 0, it means no filter label is set.
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// use std::io::Write;
+    /// // read data generated by bcftools
+    /// // bcftools query -f '%FILTER\n' testdata/test2.bcf | bgzip -c > testdata/test2_filters.gz
+    /// let mut filter_str = String::new();
+    /// smart_reader("testdata/test2_filters.gz")
+    ///     .read_to_string(&mut filter_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test2.bcf");
+    /// let s = read_header(&mut f);
+    /// let header = Header::from_string(&s);
+    /// let mut record = Record::default();
+    /// let mut filter_str2 = Vec::<u8>::new();
+    /// let d = header.dict_strings();
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     record.filters().for_each(|nv| {
+    ///         let filter_key = nv.int_val().unwrap() as usize;
+    ///         let dict_string_map = &d[&filter_key];
+    ///         let filter_name = &dict_string_map["ID"];
+    ///         write!(filter_str2, "{filter_name};").unwrap();
+    ///     });
+    ///     *filter_str2.last_mut().unwrap() = b'\n'; // line separators
+    /// }
+    /// let filter_str2 = String::from_utf8(filter_str2).unwrap();
+    /// // compare bcftools results and bcf-reader results
+    /// assert_eq!(filter_str, filter_str2);
+    /// ```
     pub fn filters(&self) -> NumericValueIter {
         let (typ, n, rng) = &self.filters;
         NumericValueIter {
@@ -800,7 +1129,7 @@ impl Record {
 }
 
 /// Open a file from a path as a MultiGzDecoder or a BufReader depending on
-/// whether the file has the magic number for gzip (1f 8b)
+/// whether the file has the magic number for gzip (Ox1f and 0x8b)
 pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
     let mut f = std::fs::File::open(p.as_ref()).expect("can not open file");
     if (f.read_u8().expect("can not read first byte") == 0x1fu8)
@@ -814,282 +1143,4 @@ pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
         f.rewind().unwrap();
         Box::new(std::io::BufReader::new(f))
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_find_fmt_idx() {
-        let mut f = smart_reader("testdata/test.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
-        assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
-    }
-
-    #[test]
-    fn test_read_samples() {
-        // read data generated by bcftools
-        // bcftools query -l test.bcf | bgzip -c > test_samples.gz
-        let mut samples_str = String::new();
-        smart_reader("./testdata/test_samples.gz")
-            .read_to_string(&mut samples_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let samples_str2 = header.get_samples().join("\n");
-
-        // compare bcftools results and bcf-reader results
-        assert_eq!(samples_str.trim(), samples_str2.trim());
-    }
-
-    #[test]
-    fn test_read_site_chrom() {
-        // read data generated by bcftools
-        // bcftools query -f '%CHROM\n' test.bcf | bgzip -c > test_chrom.gz
-        let mut chrom_str = String::new();
-        smart_reader("testdata/test_chrom.gz")
-            .read_to_string(&mut chrom_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let mut record = Record::default();
-        let mut chrom_str2 = Vec::<u8>::new();
-        use std::io::Write;
-        while let Ok(_) = record.read(&mut f) {
-            write!(
-                chrom_str2,
-                "{}\n",
-                header.get_chrname(record.chrom as usize)
-            )
-            .unwrap();
-        }
-        let chrom_str2 = String::from_utf8(chrom_str2).unwrap();
-
-        // compare bcftools results and bcf-reader results
-        assert_eq!(chrom_str, chrom_str2);
-    }
-
-    #[test]
-    fn test_read_fmt_gt() {
-        // read data generated by bcftools
-        // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
-        let mut gt_str = String::new();
-        smart_reader("testdata/test_gt.gz")
-            .read_to_string(&mut gt_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let mut record = Record::default();
-        let mut gt_str2 = Vec::<u8>::new();
-
-        use std::io::Write;
-        while let Ok(_) = record.read(&mut f) {
-            for (i, bn) in record.fmt_gt(&header).enumerate() {
-                let (noploidy, dot, phased, allele) = bn.gt_val();
-                assert_eq!(noploidy, false); // missing ploidy
-                let mut sep = '\t';
-                if i % 2 == 1 {
-                    if phased {
-                        sep = '|';
-                    } else {
-                        sep = '/';
-                    }
-                }
-                if dot {
-                    write!(gt_str2, "{sep}.").unwrap();
-                } else {
-                    write!(gt_str2, "{sep}{allele}").unwrap();
-                }
-            }
-            write!(gt_str2, "\n").unwrap();
-        }
-
-        let gt_str2 = String::from_utf8(gt_str2).unwrap();
-
-        // compare bcftools results and bcf-reader results
-        // assert_eq!(gt_str, gt_str2);
-        for (a, b) in gt_str
-            .split(|c| (c == '\n') || (c == '\t'))
-            .zip(gt_str2.split(|c| (c == '\n') || (c == '\t')))
-        {
-            assert_eq!(a, b);
-        }
-    }
-
-    #[test]
-    fn test_read_fmt_ad() {
-        // read data generated by bcftools
-        //  bcftools query -f '[\t%AD]\n' test.bcf | bgzip -c > test_ad.gz
-        let mut ad_str = String::new();
-        smart_reader("testdata/test_ad.gz")
-            .read_to_string(&mut ad_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let mut record = Record::default();
-        let mut ad_str2 = Vec::<u8>::new();
-
-        use std::io::Write;
-        let ad_filed_key = header.get_idx_from_dictionary_str("FORMAT", "AD").unwrap();
-        while let Ok(_) = record.read(&mut f) {
-            for (i, val) in record.fmt_field(ad_filed_key).enumerate() {
-                if i % record.n_allele as usize == 0 {
-                    if ad_str2.last().map(|c| *c == b',') == Some(true) {
-                        ad_str2.pop(); // trim last allele separator
-                    }
-                    ad_str2.push(b'\t'); // sample separator
-                }
-                match val.int_val() {
-                    None => {}
-                    Some(ad) => {
-                        write!(ad_str2, "{ad},").unwrap(); // allele separator
-                    }
-                }
-            }
-            // site separator
-            *ad_str2.last_mut().unwrap() = b'\n'; // sample separator
-        }
-
-        let ad_str2 = String::from_utf8(ad_str2).unwrap();
-
-        // compare bcftools results and bcf-reader results
-        for (a, b) in ad_str
-            .split(|c| (c == '\n') || (c == '\t'))
-            .zip(ad_str2.split(|c| (c == '\n') || (c == '\t')))
-        {
-            assert_eq!(a, b);
-        }
-    }
-    #[test]
-    fn test_read_site_pos() {
-        // read data generated by bcftools
-        // bcftools query -f '%POS\n' test.bcf | bgzip -c > test_pos.gz
-        let mut pos_str = String::new();
-        smart_reader("testdata/test_pos.gz")
-            .read_to_string(&mut pos_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let _s = read_header(&mut f);
-        let mut record = Record::default();
-        let mut pos_str2 = Vec::<u8>::new();
-
-        use std::io::Write;
-        while let Ok(_) = record.read(&mut f) {
-            write!(pos_str2, "{}\n", record.pos + 1).unwrap();
-        }
-
-        let pos_str2 = String::from_utf8(pos_str2).unwrap();
-        // compare bcftools results and bcf-reader results
-        assert_eq!(pos_str, pos_str2);
-    }
-
-    #[test]
-    fn test_read_site_alleles() {
-        // read data generated by bcftools
-        // bcftools query -f '%REF,%ALT\n' test.bcf | bgzip -c > test_allele.gz
-        let mut allele_str = String::new();
-        smart_reader("testdata/test_allele.gz")
-            .read_to_string(&mut allele_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test.bcf");
-        let _s = read_header(&mut f);
-        let mut record = Record::default();
-        let mut allele_str2 = Vec::<u8>::new();
-
-        while let Ok(_) = record.read(&mut f) {
-            for rng in record.alleles.iter() {
-                let slice = &record.buf_shared[rng.start..rng.end];
-                allele_str2.extend(slice);
-                allele_str2.push(b',');
-            }
-            *allele_str2.last_mut().unwrap() = b'\n';
-        }
-
-        let allele_str2 = String::from_utf8(allele_str2).unwrap();
-        // compare bcftools results and bcf-reader results
-        assert_eq!(allele_str, allele_str2);
-    }
-
-    #[test]
-    fn test_read_site_filters() {
-        // read data generated by bcftools
-        // bcftools query -f '%FILTER\n' testdata/test2.bcf | bgzip -c > testdata/test2_filters.gz
-        let mut filter_str = String::new();
-        smart_reader("testdata/test2_filters.gz")
-            .read_to_string(&mut filter_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test2.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let mut record = Record::default();
-        let mut filter_str2 = Vec::<u8>::new();
-        let d = header.get_dict_strings();
-
-        use std::io::Write;
-        while let Ok(_) = record.read(&mut f) {
-            record.filters().for_each(|nv| {
-                let filter_key = nv.int_val().unwrap() as usize;
-                let dict_string_map = &d[&filter_key];
-                let filter_name = &dict_string_map["ID"];
-                write!(filter_str2, "{filter_name};").unwrap();
-            });
-            *filter_str2.last_mut().unwrap() = b'\n'; // line separators
-        }
-
-        let filter_str2 = String::from_utf8(filter_str2).unwrap();
-        // compare bcftools results and bcf-reader results
-        assert_eq!(filter_str, filter_str2);
-    }
-
-    #[test]
-    fn test_read_site_info_af() {
-        // read data generated by bcftools
-    // bcftools query -f '%INFO/AF\n' testdata/test2.bcf | bgzip -c > testdata/test2_info_af.gz
-        let mut info_af_str = String::new();
-        smart_reader("testdata/test2_info_af.gz")
-            .read_to_string(&mut info_af_str)
-            .unwrap();
-
-        // read data via bcf-reader
-        let mut f = smart_reader("testdata/test2.bcf");
-        let s = read_header(&mut f);
-        let header = Header::from_string(&s);
-        let mut record = Record::default();
-        let mut info_af_str2 = Vec::<u8>::new();
-        let info_af_key = header.get_idx_from_dictionary_str("INFO", "AF").unwrap();
-
-        use std::io::Write;
-        while let Ok(_) = record.read(&mut f) {
-            record.info_field_numeric(info_af_key).for_each(|nv| {
-                let af = nv.float_val().unwrap();
-                write!(info_af_str2, "{af},").unwrap();
-            });
-            *info_af_str2.last_mut().unwrap() = b'\n'; // line separators
-        }
-
-        let filter_str2 = String::from_utf8(info_af_str2).unwrap();
-        // compare bcftools results and bcf-reader results
-        assert_eq!(info_af_str, filter_str2);
-    }
-
 }
