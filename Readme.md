@@ -1,3 +1,10 @@
+[![Crates.io](https://img.shields.io/crates/d/bcf_reader.svg)](https://crates.io/crates/bcf_reader)
+[![Crates.io](https://img.shields.io/crates/v/bcf_reader.svg)](https://crates.io/crates/bcf_reader)
+[![Crates.io](https://img.shields.io/crates/l/bcf_reader.svg)](https://crates.io/crates/bcf_reader)
+[![docs.rs](https://docs.rs/bcf_reader/badge.svg)](https://docs.rs/bcf_reader)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/bguo068/bcf-reader/rust.yml?branch=main&label=tests)
+
+
 # bcf_reader
 This is an attempt to create a small, lightweight, pure-Rust library to allow
 efficient, cross-platform access to genotype data in BCF files.
