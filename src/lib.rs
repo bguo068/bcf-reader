@@ -48,7 +48,7 @@
 //!
 //!     // access FORMAT/GT via iterator
 //!     for nv in record.fmt_gt(&header){
-//!         let (has_ploidy, is_missing, is_phased, allele_idx) = nv.gt_val();
+//!         let (has_no_ploidy, is_missing, is_phased, allele_idx) = nv.gt_val();
 //!         // ...
 //!     }
 //!
