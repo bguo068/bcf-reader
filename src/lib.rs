@@ -642,7 +642,7 @@ where
 {
     // read magic
     let mut magic = [0u8; 3];
-    reader.read(&mut magic).unwrap();
+    reader.read_exact(&mut magic).unwrap();
     assert_eq!(&magic, b"BCF");
 
     // read major verion and minor version
