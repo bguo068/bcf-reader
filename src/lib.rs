@@ -1149,7 +1149,7 @@ impl Record {
 }
 
 /// Open a file from a path as a MultiGzDecoder or a BufReader depending on
-/// whether the file has the magic number for gzip (Ox1f and 0x8b)
+/// whether the file has the magic number for gzip (0x1f and 0x8b)
 pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
     let mut f = std::fs::File::open(p.as_ref()).expect("can not open file");
     if (f.read_u8().expect("can not read first byte") == 0x1fu8)
