@@ -13,3 +13,7 @@ repository = "https://github.com/bguo068/bcf-reader.git"
 byteorder = "1.4.3"
 flate2 = "1.0.28"
 rayon = "1.10.0"
+
+[features]
+zlib = ["flate2/zlib"]
+zlib-ng-compat = ["flate2/zlib-ng-compat"]

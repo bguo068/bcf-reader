@@ -81,10 +81,18 @@
 //!
 //! More examples to access each field/column are available in docs of [`Record`] and [`Header`].
 //!
+//! # Reader types
 //! - For parallelized decompression reader, see [`BcfReader`].
 //! - For parallelized indexed reader, see [ `IndexedBcfReader`].
 //! - For the Lower-level reader underlying `BcfReader` and `IndexedBcfReader`,
 //! see [`ParMultiGzipReader`].
+//!
+//! # `flate2` backends
+//!
+//! By default, a rust backend is used. Other `flate2` backends `zlib` and
+//! `zlib-ng-compat` has been exported as the corresponding features (`zlib` and
+//! `zlib-ng-compat`). See <https://docs.rs/flate2/latest/flate2/> for more details.
+//!
 //!
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::bufread::DeflateDecoder;
