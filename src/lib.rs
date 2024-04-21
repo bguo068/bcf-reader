@@ -721,14 +721,14 @@ impl Record {
             Err(_x) => Err(_x)?,
         };
         l_indv = reader.read_u32::<LittleEndian>()?;
-        dbg!(l_shared, l_indv);
+        // dbg!(l_shared, l_indv);
         self.buf_shared.resize(l_shared as usize, 0u8);
         self.buf_indiv.resize(l_indv as usize, 0u8);
         reader.read_exact(self.buf_shared.as_mut_slice()).unwrap();
         reader.read_exact(self.buf_indiv.as_mut_slice()).unwrap();
         self.parse_shared();
         self.parse_indv();
-        dbg!(self.pos);
+        // dbg!(self.pos);
         Ok(())
     }
     /// parse shared fields
@@ -1365,7 +1365,7 @@ where
         };
         let this_buffer = &mut self.buffer[self.ngzip];
 
-        dbg!(this_buffer_offset);
+        // dbg!(this_buffer_offset);
 
         // let coffset_beg = self.inner.stream_position().unwrap();
         // dbg!(coffset_beg);
@@ -1697,8 +1697,8 @@ impl Csi {
     pub fn get_bin_details(&self, seqid: usize, bin_id: u32) -> &CsiBin {
         // assert!(bin_id <= self.get_bin_limit());
         let bins = &self.indices[seqid].bins;
-        dbg!(self.indices.len());
-        dbg!(bins.len());
+        // dbg!(self.indices.len());
+        // dbg!(bins.len());
         let i = bins
             .as_slice()
             .binary_search_by(|x| x.bin.cmp(&bin_id))
