@@ -1,6 +1,6 @@
 [package]
 name = "bcf_reader"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 description = "a small, lightweight, pure-Rust library to allow efficient, cross-platform access to genotype data in BCF files"
 license = "MIT"
