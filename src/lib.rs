@@ -1003,6 +1003,27 @@ impl Record {
         self.pos
     }
 
+    /// get variant ID as &str
+    /// Example:
+    /// ```
+    /// use bcf_reader::*;
+    /// let mut pos_str = String::new();
+    /// smart_reader("testdata/test_pos.gz")
+    ///     .read_to_string(&mut pos_str)
+    ///     .unwrap();
+    /// // read data via bcf-reader
+    /// let mut f = smart_reader("testdata/test.bcf");
+    /// let _s = read_header(&mut f);
+    /// let mut record = Record::default();
+    /// use std::io::Write;
+    /// while let Ok(_) = record.read(&mut f) {
+    ///     println!(record.id());
+    /// }
+    /// ```
+    pub fn id(&self) -> &str {
+        std::str::from_utf8(&self.buff_sahred[self.id.start..self.id.end]).unwrap()
+    }
+
     /// Returns the ranges of bytes in buf_shared for all alleles in the record.
     /// Example:
     /// ```
