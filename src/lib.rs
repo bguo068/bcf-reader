@@ -1021,7 +1021,7 @@ impl Record {
     /// }
     /// ```
     pub fn id(&self) -> &str {
-        std::str::from_utf8(&self.buff_sahred[self.id.start..self.id.end]).unwrap()
+        std::str::from_utf8(&self.buf_sahred[self.id.start..self.id.end]).unwrap()
     }
 
     /// Returns the ranges of bytes in buf_shared for all alleles in the record.
