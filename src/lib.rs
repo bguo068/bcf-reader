@@ -1016,7 +1016,7 @@ impl Record {
     ///     .unwrap();
     /// 
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test4.bcf");
+    /// let mut f = smart_reader("testdata/test.bcf");
     /// let _s = read_header(&mut f);
     /// let mut record = Record::default();
     /// let mut id_str2 = Vec::<u8>::new();
