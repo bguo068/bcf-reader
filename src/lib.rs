@@ -41,9 +41,9 @@
 //!     let allele_byte_ranges = record.alleles();
 //!     let share_buf = record.buf_shared();
 //!     let ref_rng = &allele_byte_ranges[0];
-//!     let ref_allele_str = std::str::from_utf8(&share_buf[ref_rng.start..ref_rng.end]).unwrap();
+//!     let ref_allele_str = std::str::from_utf8(&share_buf[ref_rng.clone()]).unwrap();
 //!     let alt1_rng = &allele_byte_ranges[1];
-//!     let alt1_allele_str = std::str::from_utf8(&share_buf[alt1_rng.start..alt1_rng.end]).unwrap();
+//!     let alt1_allele_str = std::str::from_utf8(&share_buf[alt1_rng.clone()]).unwrap();
 //!     // ...
 //!
 //!     // access FORMAT/GT via iterator
@@ -1139,7 +1139,7 @@ impl Record {
     /// let mut allele_str2 = Vec::<u8>::new();
     /// while let Ok(_) = record.read(&mut f) {
     ///     for rng in record.alleles().iter() {
-    ///         let slice = &record.buf_shared()[rng.start..rng.end];
+    ///         let slice = &record.buf_shared()[rng.clone()];
     ///         allele_str2.extend(slice);
     ///         allele_str2.push(b',');
     ///     }
