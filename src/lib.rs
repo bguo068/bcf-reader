@@ -19,8 +19,8 @@
 //! ## Usage
 //! ```
 //! use bcf_reader::*;
-//! let mut reader = smart_reader("testdata/test2.bcf");
-//! let header = Header::from_string(&read_header(&mut reader));
+//! let mut reader = smart_reader("testdata/test2.bcf").unwrap();
+//! let header = Header::from_string(&read_header(&mut reader).unwrap()).unwrap();
 //! // find key for a field in INFO or FORMAT or FILTER
 //! let key = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
 //! // access header dictionary
@@ -48,12 +48,14 @@
 //!
 //!     // access FORMAT/GT via iterator
 //!     for nv in record.fmt_gt(&header){
+//!         let nv = nv.unwrap();
 //!         let (has_no_ploidy, is_missing, is_phased, allele_idx) = nv.gt_val();
 //!         // ...
 //!     }
 //!
 //!     // access FORMAT/AD via iterator
 //!     for nv in record.fmt_field(fmt_ad_key){
+//!         let nv = nv.unwrap();
 //!         match nv.int_val(){
 //!             None => {}
 //!             Some(ad) => {
@@ -65,6 +67,7 @@
 //!
 //!     // access FILTERS via itertor
 //!     record.filters().for_each(|nv| {
+//!         let nv = nv.unwrap();
 //!        let filter_key = nv.int_val().unwrap() as usize;
 //!        let dict_string_map = &header.dict_strings()[&filter_key];
 //!        let filter_name = &dict_string_map["ID"];
@@ -73,6 +76,7 @@
 //!
 //!     // access INFO/AF via itertor
 //!     record.info_field_numeric(info_af_key).for_each(|nv| {
+//!         let nv = nv.unwrap();
 //!         let af = nv.float_val().unwrap();
 //!         // ...
 //!    });
@@ -85,7 +89,7 @@
 //! - For parallelized decompression reader, see [`BcfReader`].
 //! - For parallelized indexed reader, see [ `IndexedBcfReader`].
 //! - For the Lower-level reader underlying `BcfReader` and `IndexedBcfReader`,
-//! see [`ParMultiGzipReader`].
+//!   see [`ParMultiGzipReader`].
 //!
 //! # `flate2` backends
 //!
@@ -94,6 +98,7 @@
 //! `zlib-ng-compat`). See <https://docs.rs/flate2/latest/flate2/> for more details.
 //!
 //!
+#![warn(clippy::unwrap_used, clippy::expect_used)]
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::bufread::DeflateDecoder;
 use rayon::prelude::*;
@@ -105,6 +110,56 @@ use std::io::Read;
 use std::ops::Range;
 use std::path::Path;
 use std::{collections::HashMap, io::Seek};
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    HeaderNotParsed,
+    IndexBcfReaderMissingGenomeInterval,
+    CsBinIndexNotFound,
+    FromUtf8Error(std::string::FromUtf8Error),
+    Utf8Error(std::str::Utf8Error),
+    ParseHeaderError(ParseHeaderError),
+    NumericaValueEmptyInt,
+    NumericaValueAsF32Error,
+    Other(String),
+}
+#[derive(Debug)]
+pub enum ParseHeaderError {
+    HeaderCommentCharError,
+    MissingDictionaryname,
+    FormatError(&'static str),
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Error::Io(value)
+    }
+}
+
+trait AddContext {
+    fn add_context(self, context: &'static str) -> Error;
+}
+impl AddContext for std::io::Error {
+    fn add_context(self, context: &'static str) -> Error {
+        Error::from(std::io::Error::new(self.kind(), context))
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", *self)
+    }
+}
+impl std::fmt::Display for ParseHeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", *self)
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// An iterator used to split a `str` by a separator with separators within pairs
 /// of quotes ignored.
@@ -158,11 +213,11 @@ impl<'a> Iterator for QuotedSplitter<'a> {
             }
             if (!self.in_quotes) && ch == self.sep {
                 let (out, remain) = self.data.split_at(idx);
-                self.data = remain.strip_prefix(self.sep).unwrap();
+                self.data = remain.strip_prefix(self.sep).unwrap_or(remain);
                 return Some(out);
             }
         }
-        if self.data.len() > 0 {
+        if !self.data.is_empty() {
             let out = self.data;
             self.data = "";
             Some(out)
@@ -195,7 +250,7 @@ impl<'a> Iterator for QuotedSplitter<'a> {
 ///     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2","\n",
 /// );
 ///
-/// let header = Header::from_string(&header_text);
+/// let header = Header::from_string(&header_text).unwrap();
 ///
 /// assert_eq!(header.get_idx_from_dictionary_str("INFO", "DP"), Some(2));
 /// assert_eq!(header.get_chrname(0), "chr1");
@@ -213,7 +268,8 @@ pub struct Header {
 }
 impl Header {
     /// parse header lines to structured data `Header`
-    pub fn from_string(text: &str) -> Self {
+    pub fn from_string(text: &str) -> std::result::Result<Self, ParseHeaderError> {
+        use ParseHeaderError::*;
         let mut dict_strings = HashMap::<usize, HashMap<String, String>>::new();
         let mut dict_contigs = HashMap::<usize, HashMap<String, String>>::new();
         let mut samples = Vec::<String>::new();
@@ -234,31 +290,32 @@ impl Header {
                     .for_each(|s| samples.push(s.into()));
                 continue;
             }
-            if line.trim().len() == 0 {
+            if line.trim().is_empty() {
                 continue;
             }
-            let mut it = QuotedSplitter::new(line.strip_prefix("##").unwrap(), '=', '"');
-            let dict_name = it.next().unwrap();
-            let valid_dict = match it.next() {
-                Some(x) if x.starts_with("<") => true,
-                _ => false,
-            };
+            let mut it = QuotedSplitter::new(
+                line.strip_prefix("##").ok_or(HeaderCommentCharError)?,
+                '=',
+                '"',
+            );
+            let dict_name = it.next().ok_or(MissingDictionaryname)?;
+            let valid_dict = matches!(it.next(), Some(x) if x.starts_with("<"));
             if !valid_dict {
                 continue;
             }
-            let l = line.find('<').unwrap();
+            let l = line.find('<').ok_or(FormatError("'<' not found"))?;
             let s = line.split_at(l + 1).1;
-            let r = s.rfind('>').unwrap();
+            let r = s.rfind('>').ok_or(FormatError("> not found"))?;
             let s = s.split_at(r).0;
             let mut m = HashMap::<String, String>::new();
             for kv_str in QuotedSplitter::new(s, ',', '"') {
                 let kv_str = kv_str.trim();
 
                 let mut it = QuotedSplitter::new(kv_str, '=', '"');
-                let k = it.next().unwrap();
+                let k = it.next().ok_or(FormatError("key not found"))?;
                 let v = it
                     .next()
-                    .unwrap()
+                    .ok_or(FormatError("value not found"))?
                     .trim_end_matches('"')
                     .trim_start_matches('"');
                 m.insert(k.into(), v.into());
@@ -266,8 +323,13 @@ impl Header {
             match dict_name {
                 "contig" => {
                     if m.contains_key("IDX") {
-                        assert_eq!(dict_contig_idx_counter, 0, "if one dict string has IDX all of them should have IDX in the dictionary");
-                        let idx: usize = m["IDX"].parse().unwrap();
+                        let idx: usize = m["IDX"]
+                            .parse()
+                            .map_err(|_| FormatError("IDX value parsing error"))?;
+                        if dict_contig_idx_counter != 0 {
+                            // if one dict string has IDX all of them should have IDX in the dictionary
+                            return Err(FormatError("not all CONTIG lines have key IDX"));
+                        }
                         dict_contigs.insert(idx, m);
                     } else {
                         dict_contigs.insert(dict_contig_idx_counter, m);
@@ -275,19 +337,25 @@ impl Header {
                     }
                 }
                 _ => {
-                    if (dict_name == "FILTER") && (&m["ID"] == "PASS") {
-                        // skip FILTER/PASS already added
-                    } else {
-                        if ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name) {
-                            m.insert("Dictionary".into(), dict_name.into());
-                            if m.contains_key("IDX") {
-                                assert_eq!(dict_str_idx_counter, 1, "if one dict string has IDX all of them should have IDX in the dictionary");
-                                let idx: usize = m["IDX"].parse().unwrap();
-                                dict_strings.insert(idx, m);
-                            } else {
-                                dict_strings.insert(dict_str_idx_counter, m);
-                                dict_str_idx_counter += 1;
+                    if ((dict_name != "FILTER") || (&m["ID"] != "PASS"))
+                        && ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name)
+                    {
+                        m.insert("Dictionary".into(), dict_name.into());
+                        dbg!(&m, dict_str_idx_counter);
+                        if m.contains_key("IDX") {
+                            let idx: usize = m["IDX"]
+                                .parse()
+                                .map_err(|_| FormatError("IDX value parsing error"))?;
+                            if dict_str_idx_counter != 1 {
+                                // if one dict string has IDX all of them should have IDX in the dictionary
+                                return Err(FormatError(
+                                    "not all INFO/FILTER/FORMAT lines have key IDX",
+                                ));
                             }
+                            dict_strings.insert(idx, m);
+                        } else {
+                            dict_strings.insert(dict_str_idx_counter, m);
+                            dict_str_idx_counter += 1;
                         }
                     }
                 }
@@ -302,12 +370,12 @@ impl Header {
             }
         }
 
-        Self {
+        Ok(Self {
             dict_strings,
             dict_contigs,
             samples,
             fmt_gt_idx,
-        }
+        })
     }
 
     /// Find the key (offset in header line) for a given INFO/xx or FILTER/xx or FORMAT/xx field.
@@ -315,15 +383,15 @@ impl Header {
     /// Example:
     /// ```
     ///  use bcf_reader::*;
-    ///  let mut f = smart_reader("testdata/test.bcf");
-    ///  let s = read_header(&mut f);
-    ///  let header = Header::from_string(&s);
+    ///  let mut f = smart_reader("testdata/test.bcf").unwrap();
+    ///  let s = read_header(&mut f).unwrap();
+    ///  let header = Header::from_string(&s).unwrap();
     ///  let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
     ///  assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
     /// ```
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
         for (k, m) in self.dict_strings.iter() {
-            if (&m["Dictionary"] == dictionary) && (&m["ID"] == field) {
+            if (m["Dictionary"] == dictionary) && (m["ID"] == field) {
                 return Some(*k);
             }
         }
@@ -361,13 +429,13 @@ impl Header {
     /// // read data generated by bcftools
     /// // bcftools query -l test.bcf | bgzip -c > test_samples.gz
     /// let mut samples_str = String::new();
-    /// smart_reader("./testdata/test_samples.gz")
+    /// smart_reader("./testdata/test_samples.gz").unwrap()
     ///     .read_to_string(&mut samples_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let samples_str2 = header.get_samples().join("\n");
     /// // compare bcftools results and bcf-reader results
     /// assert_eq!(samples_str.trim(), samples_str2.trim());
@@ -453,10 +521,10 @@ impl NumericValue {
         }
     }
 
-    fn as_f32(&self) -> Self {
+    fn as_f32(&self) -> Result<Self> {
         match *self {
-            NumericValue::U32(x) => NumericValue::F32(x),
-            _ => panic!(),
+            NumericValue::U32(x) => Ok(NumericValue::F32(x)),
+            _ => Err(Error::NumericaValueAsF32Error),
         }
     }
 
@@ -480,7 +548,7 @@ impl NumericValue {
             match *self {
                 Self::U8(x) => Some(x as u32),
                 Self::U16(x) => Some(x as u32),
-                Self::U32(x) => Some(x as u32),
+                Self::U32(x) => Some(x),
                 _ => None,
             }
         }
@@ -564,32 +632,32 @@ impl NumericValue {
 /// Read typed descriptor from the reader (of decompressed BCF buffer)
 ///
 /// Return `typ` for type and `n` for count of elements of the type.
-pub fn read_typed_descriptor_bytes<R>(reader: &mut R) -> (u8, usize)
+pub fn read_typed_descriptor_bytes<R>(reader: &mut R) -> std::io::Result<(u8, usize)>
 where
     R: std::io::Read + ReadBytesExt,
 {
-    let tdb = reader.read_u8().unwrap();
+    let tdb = reader.read_u8()?;
     let typ = tdb & 0xf;
     let mut n = (tdb >> 4) as usize;
     if n == 15 {
-        n = read_single_typed_integer(reader) as usize;
+        n = read_single_typed_integer(reader)? as usize;
     }
-    (typ, n)
+    Ok((typ, n))
 }
 
 /// Read a single typed integer from the reader (of decompressed BCF buffer)
-pub fn read_single_typed_integer<R>(reader: &mut R) -> u32
+pub fn read_single_typed_integer<R>(reader: &mut R) -> std::io::Result<u32>
 where
     R: std::io::Read + ReadBytesExt,
 {
-    let (typ, n) = read_typed_descriptor_bytes(reader);
+    let (typ, n) = read_typed_descriptor_bytes(reader)?;
     assert_eq!(n, 1);
-    match typ {
-        1 => reader.read_u8().unwrap() as u32,
-        2 => reader.read_u16::<LittleEndian>().unwrap() as u32,
-        3 => reader.read_u32::<LittleEndian>().unwrap(),
+    Ok(match typ {
+        1 => reader.read_u8()? as u32,
+        2 => reader.read_u16::<LittleEndian>()? as u32,
+        3 => reader.read_u32::<LittleEndian>()?,
         _ => panic!(),
-    }
+    })
 }
 
 /// Iterator for accessing arrays of numeric values (integers or floats)
@@ -604,7 +672,7 @@ pub struct NumericValueIter<'r> {
 }
 
 impl<'r> Iterator for NumericValueIter<'r> {
-    type Item = NumericValue;
+    type Item = std::io::Result<NumericValue>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur >= self.len {
             None
@@ -613,20 +681,42 @@ impl<'r> Iterator for NumericValueIter<'r> {
                 0 => None,
                 1 => {
                     self.cur += 1;
-                    Some(self.reader.read_u8().unwrap().into())
+                    Some(self.reader.read_u8().map(NumericValue::from))
                 }
                 2 => {
                     self.cur += 1;
-                    Some(self.reader.read_u16::<LittleEndian>().unwrap().into())
+                    Some(
+                        self.reader
+                            .read_u16::<LittleEndian>()
+                            .map(NumericValue::from),
+                    )
                 }
                 3 => {
                     self.cur += 1;
-                    Some(self.reader.read_u32::<LittleEndian>().unwrap().into())
+                    Some(
+                        self.reader
+                            .read_u32::<LittleEndian>()
+                            .map(NumericValue::from),
+                    )
                 }
                 5 => {
                     self.cur += 1;
-                    let val = self.reader.read_u32::<LittleEndian>().unwrap();
-                    Some(NumericValue::from(val).as_f32())
+                    let val_res = match self
+                        .reader
+                        .read_u32::<LittleEndian>()
+                        .map(NumericValue::from)
+                    {
+                        Ok(nv) => match nv.as_f32() {
+                            Ok(nv) => Ok(nv),
+                            Err(_e) => Err(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                Error::NumericaValueAsF32Error,
+                            )),
+                        },
+                        Err(e) => Err(e),
+                    };
+
+                    Some(val_res)
                 }
                 _ => panic!(),
             }
@@ -637,7 +727,7 @@ impl<'r> Iterator for NumericValueIter<'r> {
 /// Generate an iterator of numbers from a continuous bytes buffer
 /// - typ: data type byte
 /// - n: total number of elements to iterate
-/// - buffer: the bytes buffer  
+/// - buffer: the bytes buffer
 pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumericValueIter {
     NumericValueIter {
         reader: std::io::Cursor::new(buffer),
@@ -648,41 +738,41 @@ pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumericValueIter
 }
 
 /// Read a typed string from the reader to a Rust String
-pub fn read_typed_string<R>(reader: &mut R, buffer: &mut Vec<u8>) -> usize
+pub fn read_typed_string<R>(reader: &mut R, buffer: &mut Vec<u8>) -> std::io::Result<usize>
 where
     R: std::io::Read + ReadBytesExt,
 {
-    let (typ, n) = read_typed_descriptor_bytes(reader);
+    let (typ, n) = read_typed_descriptor_bytes(reader)?;
     assert_eq!(typ, 0x7);
     let s = buffer.len();
     buffer.resize(s + n, b'\0');
-    reader.read(&mut buffer.as_mut_slice()[s..s + n]).unwrap();
-    n
+    reader.read_exact(&mut buffer.as_mut_slice()[s..s + n])?;
+    Ok(n)
 }
 
 /// read the header lines to a String
 /// use Header::from_string(text) to convert the string into structured data
-pub fn read_header<R>(reader: &mut R) -> String
+pub fn read_header<R>(reader: &mut R) -> Result<String>
 where
     R: std::io::Read + ReadBytesExt,
 {
     // read magic
     let mut magic = [0u8; 3];
-    reader.read_exact(&mut magic).unwrap();
+    reader.read_exact(&mut magic)?;
     assert_eq!(&magic, b"BCF");
 
     // read major verion and minor version
-    let major = reader.read_u8().unwrap();
-    let minor = reader.read_u8().unwrap();
+    let major = reader.read_u8()?;
+    let minor = reader.read_u8()?;
     assert_eq!(major, 2);
     assert_eq!(minor, 2);
 
     // read text length
-    let l_length = reader.read_u32::<LittleEndian>().unwrap();
+    let l_length = reader.read_u32::<LittleEndian>()?;
     let mut text = vec![0u8; l_length as usize];
-    reader.read_exact(&mut text).unwrap();
+    reader.read_exact(&mut text)?;
 
-    String::from_utf8(text).unwrap()
+    String::from_utf8(text).map_err(Error::FromUtf8Error)
 }
 
 /// Represents a record (a line or a site) in BCF file
@@ -710,93 +800,89 @@ pub struct Record {
 impl Record {
     /// read a record (copy bytes from the reader to the record's interval
     /// buffers), and separate fields
-    pub fn read<R>(&mut self, reader: &mut R) -> Result<(), Box<dyn std::error::Error>>
+    pub fn read<R>(&mut self, reader: &mut R) -> Result<()>
     where
         R: std::io::Read + ReadBytesExt,
     {
-        let l_shared;
-        let l_indv;
-        l_shared = match reader.read_u32::<LittleEndian>() {
+        let l_shared = match reader.read_u32::<LittleEndian>() {
             Ok(x) => x,
             Err(_x) => Err(_x)?,
         };
-        l_indv = reader.read_u32::<LittleEndian>()?;
+        let l_indv = reader.read_u32::<LittleEndian>()?;
         // dbg!(l_shared, l_indv);
         self.buf_shared.resize(l_shared as usize, 0u8);
         self.buf_indiv.resize(l_indv as usize, 0u8);
-        reader.read_exact(self.buf_shared.as_mut_slice()).unwrap();
-        reader.read_exact(self.buf_indiv.as_mut_slice()).unwrap();
-        self.parse_shared();
-        self.parse_indv();
+        reader.read_exact(self.buf_shared.as_mut_slice())?;
+        reader.read_exact(self.buf_indiv.as_mut_slice())?;
+        self.parse_shared()?;
+        self.parse_indv()?;
         // dbg!(self.pos);
         Ok(())
     }
     /// parse shared fields
-    fn parse_shared(&mut self) {
+    fn parse_shared(&mut self) -> std::io::Result<()> {
         let mut reader = std::io::Cursor::new(self.buf_shared.as_slice());
-        self.chrom = reader.read_i32::<LittleEndian>().unwrap();
-        self.pos = reader.read_i32::<LittleEndian>().unwrap();
-        self.rlen = reader.read_i32::<LittleEndian>().unwrap();
-        let qual_u32 = reader.read_u32::<LittleEndian>().unwrap();
-        self.qual = NumericValue::from(qual_u32).as_f32();
-        self.n_info = reader.read_u16::<LittleEndian>().unwrap();
-        self.n_allele = reader.read_u16::<LittleEndian>().unwrap();
-        let combined = reader.read_u32::<LittleEndian>().unwrap();
+        self.chrom = reader.read_i32::<LittleEndian>()?;
+        self.pos = reader.read_i32::<LittleEndian>()?;
+        self.rlen = reader.read_i32::<LittleEndian>()?;
+        let qual_u32 = reader.read_u32::<LittleEndian>()?;
+        self.qual = NumericValue::from(qual_u32)
+            .as_f32()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        self.n_info = reader.read_u16::<LittleEndian>()?;
+        self.n_allele = reader.read_u16::<LittleEndian>()?;
+        let combined = reader.read_u32::<LittleEndian>()?;
         self.n_sample = combined & 0xffffff;
         self.n_fmt = (combined >> 24) as u8;
         // id
-        let (typ, n) = read_typed_descriptor_bytes(&mut reader);
+        let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
         assert_eq!(typ, 0x7);
         let cur = reader.position() as usize;
-        self.id = cur..cur + n as usize;
-        reader.seek(std::io::SeekFrom::Current(n as i64)).unwrap();
+        self.id = cur..cur + n;
+        reader.seek(std::io::SeekFrom::Current(n as i64))?;
         // alleles
         self.alleles.clear();
         for _ in 0..self.n_allele {
-            let (typ, n) = read_typed_descriptor_bytes(&mut reader);
+            let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
             assert_eq!(typ, 0x7);
             let cur = reader.position() as usize;
-            self.alleles.push(cur..cur + n as usize);
-            reader.seek(std::io::SeekFrom::Current(n as i64)).unwrap();
+            self.alleles.push(cur..cur + n);
+            reader.seek(std::io::SeekFrom::Current(n as i64))?;
         }
         //filters
-        let (typ, n) = read_typed_descriptor_bytes(&mut reader);
+        let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
         let width: usize = bcf2_typ_width(typ);
         let s = reader.position() as usize;
-        let e = s + width * n as usize;
-        reader
-            .seek(std::io::SeekFrom::Current((e - s) as i64))
-            .unwrap();
-        self.filters = (typ, n as usize, s..e);
+        let e = s + width * n;
+        reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
+        self.filters = (typ, n, s..e);
         // infos
         self.info.clear();
         for _idx in 0..(self.n_info as usize) {
-            let info_key = read_single_typed_integer(&mut reader);
-            let (typ, n) = read_typed_descriptor_bytes(&mut reader);
+            let info_key = read_single_typed_integer(&mut reader)?;
+            let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
             let width = bcf2_typ_width(typ);
             let s = reader.position() as usize;
-            let e = s + width * n as usize;
-            reader
-                .seek(std::io::SeekFrom::Current((e - s) as i64))
-                .unwrap();
-            self.info.push((info_key as usize, typ, n as usize, s..e));
+            let e = s + width * n;
+            reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
+            self.info.push((info_key as usize, typ, n, s..e));
         }
+        Ok(())
     }
     /// parse indiv fields, complicated field will need further processing
-    fn parse_indv(&mut self) {
+    fn parse_indv(&mut self) -> std::io::Result<()> {
         let mut reader = std::io::Cursor::new(self.buf_indiv.as_slice());
         self.gt.clear();
         for _idx in 0..(self.n_fmt as usize) {
-            let fmt_key = read_single_typed_integer(&mut reader);
-            let (typ, n) = read_typed_descriptor_bytes(&mut reader);
+            let fmt_key = read_single_typed_integer(&mut reader)?;
+            let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
             let width = bcf2_typ_width(typ);
             let s = reader.position() as usize;
-            let e = s + width * self.n_sample as usize * n as usize;
-            reader
-                .seek(std::io::SeekFrom::Current((e - s) as i64))
-                .unwrap();
-            self.gt.push((fmt_key as usize, typ, n as usize, s..e));
+            let e = s + width * self.n_sample as usize * n;
+            reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
+            self.gt.push((fmt_key as usize, typ, n, s..e));
         }
+        Ok(())
     }
 
     /// get chromosome offset
@@ -807,13 +893,13 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%CHROM\n' test.bcf | bgzip -c > test_chrom.gz
     /// let mut chrom_str = String::new();
-    /// smart_reader("testdata/test_chrom.gz")
+    /// smart_reader("testdata/test_chrom.gz").unwrap()
     ///     .read_to_string(&mut chrom_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let mut record = Record::default();
     /// let mut chrom_str2 = Vec::<u8>::new();
     /// while let Ok(_) = record.read(&mut f) {
@@ -855,18 +941,18 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
     /// let mut gt_str = String::new();
-    /// smart_reader("testdata/test_gt.gz")
+    /// smart_reader("testdata/test_gt.gz").unwrap()
     ///     .read_to_string(&mut gt_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let mut record = Record::default();
     /// let mut gt_str2 = Vec::<u8>::new();
     /// while let Ok(_) = record.read(&mut f) {
     ///     for (i, bn) in record.fmt_gt(&header).enumerate() {
-    ///         let (noploidy, dot, phased, allele) = bn.gt_val();
+    ///         let (noploidy, dot, phased, allele) = bn.unwrap().gt_val();
     ///         assert_eq!(noploidy, false); // missing ploidy
     ///         let mut sep = '\t';
     ///         if i % 2 == 1 {
@@ -903,7 +989,7 @@ impl Record {
                     if e.0 == fmt_gt_id {
                         it = iter_typed_integers(
                             e.1,
-                            e.2 as usize * self.n_sample as usize,
+                            e.2 * self.n_sample as usize,
                             &self.buf_indiv[e.3.start..e.3.end],
                         );
                     }
@@ -922,18 +1008,19 @@ impl Record {
     /// // read data generated by bcftools
     /// //  bcftools query -f '[\t%AD]\n' test.bcf | bgzip -c > test_ad.gz
     /// let mut ad_str = String::new();
-    /// smart_reader("testdata/test_ad.gz")
+    /// smart_reader("testdata/test_ad.gz").unwrap()
     ///     .read_to_string(&mut ad_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let mut record = Record::default();
     /// let mut ad_str2 = Vec::<u8>::new();
     /// let ad_filed_key = header.get_idx_from_dictionary_str("FORMAT", "AD").unwrap();
     /// while let Ok(_) = record.read(&mut f) {
     ///     for (i, val) in record.fmt_field(ad_filed_key).enumerate() {
+    ///         let val = val.unwrap();
     ///         if i % record.n_allele() as usize == 0 {
     ///             if ad_str2.last().map(|c| *c == b',') == Some(true) {
     ///                 ad_str2.pop(); // trim last allele separator
@@ -968,7 +1055,7 @@ impl Record {
             if e.0 == fmt_key {
                 it = iter_typed_integers(
                     e.1,
-                    e.2 as usize * self.n_sample as usize,
+                    e.2 * self.n_sample as usize,
                     &self.buf_indiv[e.3.start..e.3.end],
                 );
             }
@@ -983,12 +1070,12 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%POS\n' test.bcf | bgzip -c > test_pos.gz
     /// let mut pos_str = String::new();
-    /// smart_reader("testdata/test_pos.gz")
+    /// smart_reader("testdata/test_pos.gz").unwrap()
     ///     .read_to_string(&mut pos_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let _s = read_header(&mut f);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let _s = read_header(&mut f).unwrap();
     /// let mut record = Record::default();
     /// let mut pos_str2 = Vec::<u8>::new();
     /// use std::io::Write;
@@ -1011,22 +1098,19 @@ impl Record {
     /// // bcftools query -f '%ID\n' test.bcf | bgzip -c > test_id.gz
     /// let mut id_str = String::new();
     ///
-    /// smart_reader("testdata/test_id.gz")
+    /// smart_reader("testdata/test_id.gz").unwrap()
     ///     .read_to_string(&mut id_str)
     ///     .unwrap();
     ///
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let _s = read_header(&mut f);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let _s = read_header(&mut f).unwrap();
     /// let mut record = Record::default();
     /// let mut id_str2 = Vec::<u8>::new();
     /// use std::io::Write;
     /// while let Ok(_) = record.read(&mut f) {
-    ///     let id = if record.id().is_empty() {
-    ///         "."
-    ///     } else {
-    ///         record.id()
-    ///     };
+    ///     let record_id = record.id().unwrap();
+    ///     let id = if record_id.is_empty() { "." } else { record_id };
     ///     write!(id_str2, "{}\n", id).unwrap();
     /// }
     /// let id_str2 = String::from_utf8(id_str2).unwrap();
@@ -1034,8 +1118,8 @@ impl Record {
     /// assert_eq!(id_str, id_str2);
     ///
     /// ```
-    pub fn id(&self) -> &str {
-        std::str::from_utf8(&self.buf_shared[self.id.start..self.id.end]).unwrap()
+    pub fn id(&self) -> Result<&str> {
+        std::str::from_utf8(&self.buf_shared[self.id.start..self.id.end]).map_err(Error::Utf8Error)
     }
 
     /// Returns the ranges of bytes in buf_shared for all alleles in the record.
@@ -1045,12 +1129,12 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%REF,%ALT\n' test.bcf | bgzip -c > test_allele.gz
     /// let mut allele_str = String::new();
-    /// smart_reader("testdata/test_allele.gz")
+    /// smart_reader("testdata/test_allele.gz").unwrap()
     ///     .read_to_string(&mut allele_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test.bcf");
-    /// let _s = read_header(&mut f);
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let _s = read_header(&mut f).unwrap();
     /// let mut record = Record::default();
     /// let mut allele_str2 = Vec::<u8>::new();
     /// while let Ok(_) = record.read(&mut f) {
@@ -1079,19 +1163,19 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%INFO/AF\n' testdata/test2.bcf | bgzip -c > testdata/test2_info_af.gz
     /// let mut info_af_str = String::new();
-    /// smart_reader("testdata/test2_info_af.gz")
+    /// smart_reader("testdata/test2_info_af.gz").unwrap()
     ///     .read_to_string(&mut info_af_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test2.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test2.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let mut record = Record::default();
     /// let mut info_af_str2 = Vec::<u8>::new();
     /// let info_af_key = header.get_idx_from_dictionary_str("INFO", "AF").unwrap();
     /// while let Ok(_) = record.read(&mut f) {
     ///     record.info_field_numeric(info_af_key).for_each(|nv| {
-    ///         let af = nv.float_val().unwrap();
+    ///         let af = nv.unwrap().float_val().unwrap();
     ///         write!(info_af_str2, "{af},").unwrap();
     ///     });
     ///     *info_af_str2.last_mut().unwrap() = b'\n'; // line separators
@@ -1123,19 +1207,20 @@ impl Record {
 
     /// Return str value for an INFO/xxx field.
     /// If the key is not found or data type is not string, then return None.
-    pub fn info_field_str(&self, info_key: usize) -> Option<&str> {
+    pub fn info_field_str(&self, info_key: usize) -> Result<Option<&str>> {
         let mut res = None;
         for (key, typ, _n, rng) in self.info.iter() {
             if *key == info_key {
                 if *typ != 0x7 {
-                    return None;
+                    return Ok(None);
                 }
-                let s = std::str::from_utf8(&self.buf_shared[rng.start..rng.end]).unwrap();
+                let s = std::str::from_utf8(&self.buf_shared[rng.start..rng.end])
+                    .map_err(Error::Utf8Error)?;
                 res = Some(s);
                 break;
             }
         }
-        res
+        Ok(res)
     }
 
     /// iterate an integer for each filter key.
@@ -1147,18 +1232,19 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%FILTER\n' testdata/test2.bcf | bgzip -c > testdata/test2_filters.gz
     /// let mut filter_str = String::new();
-    /// smart_reader("testdata/test2_filters.gz")
+    /// smart_reader("testdata/test2_filters.gz").unwrap()
     ///     .read_to_string(&mut filter_str)
     ///     .unwrap();
     /// // read data via bcf-reader
-    /// let mut f = smart_reader("testdata/test2.bcf");
-    /// let s = read_header(&mut f);
-    /// let header = Header::from_string(&s);
+    /// let mut f = smart_reader("testdata/test2.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
     /// let mut record = Record::default();
     /// let mut filter_str2 = Vec::<u8>::new();
     /// let d = header.dict_strings();
     /// while let Ok(_) = record.read(&mut f) {
     ///     record.filters().for_each(|nv| {
+    ///         let nv = nv.unwrap();
     ///         let filter_key = nv.int_val().unwrap() as usize;
     ///         let dict_string_map = &d[&filter_key];
     ///         let filter_name = &dict_string_map["ID"];
@@ -1193,18 +1279,18 @@ impl Record {
 
 /// Open a file from a path as a MultiGzDecoder or a BufReader depending on
 /// whether the file has the magic number for gzip (0x1f and 0x8b)
-pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
-    let mut f = std::fs::File::open(p.as_ref()).expect("can not open file");
-    if (f.read_u8().expect("can not read first byte") == 0x1fu8)
-        && (f.read_u8().expect("can not read second byte") == 0x8bu8)
+pub fn smart_reader(p: impl AsRef<std::path::Path>) -> std::io::Result<Box<dyn std::io::Read>> {
+    let mut f = std::fs::File::open(p.as_ref())?;
+    if (f.read_u8()? == 0x1fu8) && (f.read_u8()? == 0x8bu8)
+    //.expect("can not read second byte")
     {
         // gzip format
-        f.rewind().unwrap();
-        Box::new(flate2::read::MultiGzDecoder::new(f))
+        f.rewind()?;
+        Ok(Box::new(flate2::read::MultiGzDecoder::new(f)))
     } else {
         // not gzip format
-        f.rewind().unwrap();
-        Box::new(std::io::BufReader::new(f))
+        f.rewind()?;
+        Ok(Box::new(std::io::BufReader::new(f)))
     }
 }
 
@@ -1224,19 +1310,20 @@ pub fn smart_reader(p: impl AsRef<std::path::Path>) -> Box<dyn std::io::Read> {
 /// // read data generated by bcftools
 /// // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
 /// let mut gt_str = String::new();
-/// smart_reader("testdata/test_gt.gz")
+/// smart_reader("testdata/test_gt.gz").unwrap()
 ///     .read_to_string(&mut gt_str)
 ///     .unwrap();
 /// // read data via bcf-reader
 /// let max_gzip_block_in_buffer = 10;
 /// let reader = File::open("testdata/test.bcf").map(BufReader::new).unwrap();
-/// let mut f = ParMultiGzipReader::from_reader(reader, max_gzip_block_in_buffer, None, None);
-/// let s = read_header(&mut f);
-/// let header = Header::from_string(&s);
+/// let mut f = ParMultiGzipReader::from_reader(reader, max_gzip_block_in_buffer, None, None).unwrap();
+/// let s = read_header(&mut f).unwrap();
+/// let header = Header::from_string(&s).unwrap();
 /// let mut record = Record::default();
 /// let mut gt_str2 = Vec::<u8>::new();
 /// while let Ok(_) = record.read(&mut f) {
 ///     for (i, bn) in record.fmt_gt(&header).enumerate() {
+///         let bn = bn.unwrap();
 ///         let (noploidy, dot, phased, allele) = bn.gt_val();
 ///         assert_eq!(noploidy, false); // missing ploidy
 ///         let mut sep = '\t';
@@ -1322,7 +1409,7 @@ where
     /// };
     /// use bcf_reader::*;
     ///  // index file
-    /// let csi = Csi::from_path("testdata/test3.bcf.csi");
+    /// let csi = Csi::from_path("testdata/test3.bcf.csi").unwrap();
     /// // reader
     /// let mut reader = File::open("testdata/test3.bcf").map(BufReader::new).unwrap();
     ///
@@ -1331,14 +1418,14 @@ where
     /// let end = 1495746 - 1;
     /// let chrom_id = 0;
     /// let bin_id = csi.get_bin_id(start, start + 1 as i64);
-    /// let bin_details = csi.get_bin_details(chrom_id, bin_id);
+    /// let bin_details = csi.get_bin_details(chrom_id, bin_id).unwrap();
     /// let (coffset, uoffset) = bin_details.chunks()[0].chunk_beg.get_coffset_uoffset();
     ///
     /// // seek to the target bgzip block
     /// reader.seek(std::io::SeekFrom::Start(coffset)).unwrap();
     /// // create the parallelizable reader by wraping around the existing reader
     /// // and specifing offsets
-    /// let mut reader = ParMultiGzipReader::from_reader(reader, 1, Some(coffset), Some(uoffset));
+    /// let mut reader = ParMultiGzipReader::from_reader(reader, 1, Some(coffset), Some(uoffset)).unwrap();
     ///
     /// let mut record = Record::default();
     /// let mut pos_found = vec![];
@@ -1371,7 +1458,7 @@ where
         ngzip_max: usize,
         coffset: Option<u64>,
         uoffset: Option<u64>,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut this = Self {
             inner: reader,
             buffer: vec![BgzfBuffer::default(); ngzip_max],
@@ -1381,10 +1468,10 @@ where
             coffset: coffset.unwrap_or(0),
             inner_eof: false,
         };
-        this.clear_and_fill_buffers();
-        this.decomp_all();
+        this.clear_and_fill_buffers()?;
+        this.decomp_all()?;
         this.ibyte = uoffset.unwrap_or(0) as usize;
-        this
+        Ok(this)
     }
     pub fn get_coffset_uoffset(&self) -> (u64, u64) {
         let coffset = self.buffer[self.igzip].coffset;
@@ -1415,45 +1502,35 @@ where
             Ok(id1) => id1,
         };
         assert_eq!(id1, 31);
-        let id2 = self.inner.read_u8().unwrap();
+        let id2 = self.inner.read_u8()?;
         assert_eq!(id2, 139);
-        let cm = self.inner.read_u8().unwrap();
+        let cm = self.inner.read_u8()?;
         assert_eq!(cm, 8);
-        let flg = self.inner.read_u8().unwrap();
+        let flg = self.inner.read_u8()?;
         assert_eq!(flg, 4);
-        let _mtime = self.inner.read_u32::<LittleEndian>().unwrap();
-        let _xfl = self.inner.read_u8().unwrap();
-        let _os = self.inner.read_u8().unwrap();
-        let xlen = self.inner.read_u16::<LittleEndian>().unwrap();
-        let si1 = self.inner.read_u8().unwrap();
+        let _mtime = self.inner.read_u32::<LittleEndian>()?;
+        let _xfl = self.inner.read_u8()?;
+        let _os = self.inner.read_u8()?;
+        let xlen = self.inner.read_u16::<LittleEndian>()?;
+        let si1 = self.inner.read_u8()?;
         assert_eq!(si1, 66);
-        let si2 = self.inner.read_u8().unwrap();
+        let si2 = self.inner.read_u8()?;
         assert_eq!(si2, 67);
-        let slen = self.inner.read_u16::<LittleEndian>().unwrap();
+        let slen = self.inner.read_u16::<LittleEndian>()?;
         assert_eq!(slen, 2);
-        let bsize = self.inner.read_u16::<LittleEndian>().unwrap();
+        let bsize = self.inner.read_u16::<LittleEndian>()?;
 
         let buffer_compressed = &mut this_buffer.compressed;
-        let cdata_sz = bsize - xlen as u16 - 19;
+        let cdata_sz = bsize - xlen - 19;
 
-        buffer_compressed.clear();
-        buffer_compressed.reserve(cdata_sz as usize);
-        unsafe {
-            buffer_compressed.set_len(cdata_sz as usize);
-        }
-        self.inner
-            .read_exact(buffer_compressed.as_mut_slice())
-            .unwrap();
+        buffer_compressed.resize(cdata_sz as usize, 0u8);
+        self.inner.read_exact(buffer_compressed.as_mut_slice())?;
 
-        let _crc32 = self.inner.read_u32::<LittleEndian>().unwrap();
-        let isize = self.inner.read_u32::<LittleEndian>().unwrap();
+        let _crc32 = self.inner.read_u32::<LittleEndian>()?;
+        let isize = self.inner.read_u32::<LittleEndian>()?;
 
         let buffer_uncompressed = &mut this_buffer.uncompressed;
-        buffer_uncompressed.clear();
-        buffer_uncompressed.reserve(isize as usize);
-        unsafe {
-            buffer_uncompressed.set_len(isize as usize);
-        }
+        buffer_uncompressed.resize(isize as usize, 0u8);
         this_buffer.coffset = this_buffer_offset;
         this_buffer.gzip_size = bsize + 1;
         this_buffer.uncompressed_data_size = isize;
@@ -1464,7 +1541,7 @@ where
         Ok(())
     }
     // clear buffer and refill (sequential)
-    fn clear_and_fill_buffers(&mut self) {
+    fn clear_and_fill_buffers(&mut self) -> std::io::Result<()> {
         let Self {
             inner: _,
             buffer,
@@ -1492,21 +1569,27 @@ where
         *igzip = 0;
         *ibyte = 0;
         for _i in 0..self.buffer.len() {
-            self.read_single_gzip().unwrap();
+            self.read_single_gzip()?;
             if self.inner_eof {
                 break;
             }
         }
+        Ok(())
     }
 
     /// decompress all read gzip file in memory (parallel)
-    fn decomp_all(&mut self) {
-        self.buffer.par_iter_mut().for_each(|buffer| {
-            let compressed = buffer.compressed.as_slice();
-            let uncompressed = &mut buffer.uncompressed.as_mut_slice();
-            let mut deflater = DeflateDecoder::new(compressed);
-            deflater.read_exact(uncompressed).unwrap();
-        });
+    fn decomp_all(&mut self) -> std::io::Result<()> {
+        self.buffer
+            .par_iter_mut()
+            .try_for_each(|buffer| -> std::io::Result<()> {
+                let compressed = buffer.compressed.as_slice();
+                let uncompressed = &mut buffer.uncompressed.as_mut_slice();
+                let mut deflater = DeflateDecoder::new(compressed);
+                deflater.read_exact(uncompressed)?;
+                //.map_err(|e| e.add_context("deflater.read_exact"))?;
+                Ok(())
+            })?;
+        Ok(())
     }
 }
 
@@ -1521,8 +1604,8 @@ where
             if self.inner_eof {
                 return Ok(0);
             }
-            self.clear_and_fill_buffers();
-            self.decomp_all();
+            self.clear_and_fill_buffers()?;
+            self.decomp_all()?;
         }
         // read from the buffer
         //  check current
@@ -1545,8 +1628,8 @@ where
                 if self.inner_eof {
                     return Ok(0);
                 }
-                self.clear_and_fill_buffers();
-                self.decomp_all();
+                self.clear_and_fill_buffers()?;
+                self.decomp_all()?;
             }
         }
         Ok(n)
@@ -1595,7 +1678,7 @@ pub struct CsiChunk {
 #[derive(Default, Debug)]
 pub struct CsiBin {
     bin: u32,
-    loffset: VirtualFileOffsets,
+    _loffset: VirtualFileOffsets,
     n_chunk: i32,
     chunks: Vec<CsiChunk>,
 }
@@ -1622,71 +1705,97 @@ pub struct Csi {
 
 impl Csi {
     /// Create Csi from a path to a `*.csi` file
-    pub fn from_path(p: impl AsRef<Path>) -> Self {
+    pub fn from_path(p: impl AsRef<Path>) -> Result<Self> {
         let mut csi = Csi::default();
-        let mut file = smart_reader(p.as_ref());
+        let mut file = smart_reader(p.as_ref())?;
         // magic
         file.read_exact(csi.magic.as_mut())
-            .expect("error in reading csi magic bytes");
-        assert_eq!(csi.magic, [b'C', b'S', b'I', 1]);
+            .map_err(|e| e.add_context("error in reading csi magic bytes"))?;
+        if csi.magic != [b'C', b'S', b'I', 1] {
+            return Err(Error::Io(std::io::Error::new(
+                io::ErrorKind::Other,
+                "csi magic is not 'CSI1'".to_owned(),
+            )));
+        }
         // min_shift
         csi.min_shift = file
             .read_i32::<LittleEndian>()
-            .expect("error in reading csi min_shift field");
+            .map_err(|e| e.add_context("error in reading csi min_shift field"))?;
         // dbg!(csi.min_shift);
         // depth
         csi.depth = file
             .read_i32::<LittleEndian>()
-            .expect("error in reading csi depth field");
+            .map_err(|e| e.add_context("error in reading csi depth field"))?;
         // dbg!(csi.depth);
         // l_aux
         csi.l_aux = file
             .read_i32::<LittleEndian>()
-            .expect("error in reading csi l_aux field");
+            .map_err(|e| e.add_context("error in reading csi l_aux field"))?;
         // dbg!(csi.l_aux);
         // aux
         csi.aux.resize(csi.l_aux as usize, 0u8);
-        file.read_exact(&mut csi.aux.as_mut())
-            .expect("error in reading csi aux field");
+        file.read_exact(csi.aux.as_mut())
+            .map_err(|e| e.add_context("error in reading csi aux field"))?;
         // n_ref
         csi.n_ref = file
             .read_i32::<LittleEndian>()
-            .expect("error in reading csi n_ref field");
+            .map_err(|e| e.add_context("error in reading csi n_ref field"))?;
 
         // iterate over chromosomes
         for _ in 0..csi.n_ref {
-            let mut idx = CsiIndex::default();
-            idx.n_bin = file
-                .read_i32::<LittleEndian>()
-                .expect("error in reading csi index n_bin field");
+            let mut idx = CsiIndex {
+                n_bin: {
+                    file.read_i32::<LittleEndian>()
+                        .map_err(|e| e.add_context("error in reading csi index n_bin field"))?
+                },
+                ..Default::default()
+            };
             for _ in 0..idx.n_bin {
-                let mut bin = CsiBin::default();
-                // bin
-                bin.bin = file
-                    .read_u32::<LittleEndian>()
-                    .expect("error in reading csi bin bin field");
-                // loffset
-                bin.loffset = file
-                    .read_u64::<LittleEndian>()
-                    .expect("error in reading csi bin loffset field")
-                    .into();
-                // n_chunk
-                bin.n_chunk = file
-                    .read_i32::<LittleEndian>()
-                    .expect("error in reading csi bin n_chunk field");
+                let mut bin = CsiBin {
+                    // bin
+                    bin: file
+                        .read_u32::<LittleEndian>()
+                        .map_err(|e| e.add_context("error in reading csi bin bin field"))?,
+                    _loffset: file
+                        .read_u64::<LittleEndian>()
+                        .map_err(|e| {
+                            Error::from(std::io::Error::new(
+                                e.kind(),
+                                "error in reading csi bin loffset field",
+                            ))
+                        })?
+                        .into(),
+                    // n_chunk
+                    n_chunk: file.read_i32::<LittleEndian>().map_err(|e| {
+                        Error::from(std::io::Error::new(
+                            e.kind(),
+                            "error in reading csi bin n_chunk field",
+                        ))
+                    })?,
+                    ..Default::default()
+                };
 
                 for _ in 0..bin.n_chunk {
-                    let mut chunk = CsiChunk::default();
-                    // chunk_beg
-                    chunk.chunk_beg = file
-                        .read_u64::<LittleEndian>()
-                        .expect("error in reading csi chunk chunk_beg")
-                        .into();
-                    // chunk_end
-                    chunk.chunk_end = file
-                        .read_u64::<LittleEndian>()
-                        .expect("error in reading csi chunk chunk_end")
-                        .into();
+                    let chunk = CsiChunk {
+                        chunk_beg: file
+                            .read_u64::<LittleEndian>()
+                            .map_err(|e| {
+                                Error::from(std::io::Error::new(
+                                    e.kind(),
+                                    "error in reading csi chunk chunk_beg",
+                                ))
+                            })?
+                            .into(),
+                        chunk_end: file
+                            .read_u64::<LittleEndian>()
+                            .map_err(|e| {
+                                Error::from(std::io::Error::new(
+                                    e.kind(),
+                                    "error in reading csi chunk chunk_end",
+                                ))
+                            })?
+                            .into(),
+                    };
                     bin.chunks.push(chunk);
                 }
                 idx.bins.push(bin);
@@ -1697,7 +1806,7 @@ impl Csi {
         // n_no_coor
         csi.n_no_coor = file.read_u64::<LittleEndian>().ok();
 
-        csi
+        Ok(csi)
     }
 
     /// Convert positional coordinate range to a bin number
@@ -1723,13 +1832,13 @@ impl Csi {
             l += 1;
         }
 
-        return 0;
+        0
     }
 
     /// Get CsiBin based the chromosome id and bin number.
     ///
     /// The return CsiBin can provide details of the included chunks.
-    pub fn get_bin_details(&self, seqid: usize, bin_id: u32) -> &CsiBin {
+    pub fn get_bin_details(&self, seqid: usize, bin_id: u32) -> Result<&CsiBin> {
         // assert!(bin_id <= self.get_bin_limit());
         let bins = &self.indices[seqid].bins;
         // dbg!(self.indices.len());
@@ -1737,14 +1846,15 @@ impl Csi {
         let i = bins
             .as_slice()
             .binary_search_by(|x| x.bin.cmp(&bin_id))
-            .expect("bin index not found\n");
-        &bins[i]
+            .map_err(|_| Error::CsBinIndexNotFound)?;
+        // .expect("bin index not found\n");
+        Ok(&bins[i])
     }
 
     /// Get the max possible bin number in theory. Note, the maximum bin may not
     /// be present in the Csi index file.
     pub fn get_bin_limit(&self) -> u32 {
-        (1 << ((self.depth + 1) * 3) - 1) / 7
+        (1 << (((self.depth + 1) * 3) - 1)) / 7
     }
 }
 
@@ -1805,18 +1915,16 @@ where
     }
 
     /// Read the header
-    pub fn read_header(&mut self) -> Header {
-        let header = Header::from_string(&read_header(&mut self.inner));
+    pub fn read_header(&mut self) -> Result<Header> {
+        let header =
+            Header::from_string(&read_header(&mut self.inner)?).map_err(Error::ParseHeaderError)?;
         self.header_parsed = true;
-        header
+        Ok(header)
     }
 
     /// Read one record. This should be called after the header is read and parsed.
     /// Otherwise, it will panic.
-    pub fn read_record(
-        &mut self,
-        record: &mut Record,
-    ) -> Result<(), Box<(dyn std::error::Error + 'static)>> {
+    pub fn read_record(&mut self, record: &mut Record) -> Result<()> {
         assert!(
             self.header_parsed,
             "header should be parsed before reading records"
@@ -1844,7 +1952,7 @@ pub struct GenomeInterval {
 /// ```
 /// use bcf_reader::*;
 /// // create indexed bcf reader
-/// let mut reader = IndexedBcfReader::from_path("testdata/test3.bcf", "testdata/test3.bcf.csi", None);
+/// let mut reader = IndexedBcfReader::from_path("testdata/test3.bcf", "testdata/test3.bcf.csi", None).unwrap();
 /// // read though header
 /// let _header = reader.read_header();
 /// // define targeted genome interval
@@ -1884,35 +1992,36 @@ impl IndexedBcfReader {
     /// csi index file.
     ///
     ///  - `max_gzip`, the number of gzip blocks to read before each batch
-    /// parallelized decompression. See [`ParMultiGzipReader::from_reader`]
-    /// (by default (None) use 3); this construct will automaticall read and
-    /// parse the header
+    ///    parallelized decompression. See [`ParMultiGzipReader::from_reader`]
+    ///    (by default (None) use 3); this construct will automaticall read and
+    ///    parse the header
     pub fn from_path(
         path_bcf: impl AsRef<Path>,
         path_csi: impl AsRef<Path>,
         max_gzip: Option<usize>,
-    ) -> Self {
-        let reader = File::open(path_bcf.as_ref()).map(BufReader::new).unwrap();
-        let csi = Csi::from_path(path_csi.as_ref());
-        let reader = ParMultiGzipReader::from_reader(reader, max_gzip.unwrap_or(3), None, None);
-        Self {
+    ) -> Result<Self> {
+        let reader = File::open(path_bcf.as_ref()).map(BufReader::new)?;
+        let csi = Csi::from_path(path_csi.as_ref())?;
+        let reader = ParMultiGzipReader::from_reader(reader, max_gzip.unwrap_or(3), None, None)?;
+        Ok(Self {
             inner: reader,
-            csi: csi,
+            csi,
             header_parsed: false,
             genome_interval: None,
-        }
+        })
     }
     /// Read the header bytes, parse them and return a `Header`
-    pub fn read_header(&mut self) -> Header {
-        let header = Header::from_string(&read_header(&mut self.inner));
+    pub fn read_header(&mut self) -> Result<Header> {
+        let header =
+            Header::from_string(&read_header(&mut self.inner)?).map_err(Error::ParseHeaderError)?;
         self.header_parsed = true;
-        header
+        Ok(header)
     }
 
     /// Jump the file pointer to the begining to the targeted genome interval
     ///
     /// If no site within the genome interval, read_record will return Err(_)
-    pub fn set_interval(&mut self, genome_interval: GenomeInterval) {
+    pub fn set_interval(&mut self, genome_interval: GenomeInterval) -> Result<()> {
         // find the target based on csi
         let bin_id = self
             .csi
@@ -1920,15 +2029,13 @@ impl IndexedBcfReader {
 
         let (coffset, uoffset) = self
             .csi
-            .get_bin_details(genome_interval.chrom_id, bin_id)
-            .chunks
-            .first()
-            .unwrap()
+            .get_bin_details(genome_interval.chrom_id, bin_id)?
+            .chunks[0]
             .chunk_beg
             .get_coffset_uoffset();
 
         let par_reader = &mut self.inner;
-        par_reader.inner.seek(io::SeekFrom::Start(coffset)).unwrap();
+        par_reader.inner.seek(io::SeekFrom::Start(coffset))?;
 
         // clear buffer, especially things related to coffset
         par_reader.buffer.iter_mut().for_each(|bgzf_buffer| {
@@ -1943,29 +2050,31 @@ impl IndexedBcfReader {
         par_reader.ibyte = 0;
 
         // fill buffer
-        par_reader.clear_and_fill_buffers();
-        par_reader.decomp_all();
+        par_reader.clear_and_fill_buffers()?;
+        par_reader.decomp_all()?;
 
         // jump for uoffset
         par_reader.ibyte = uoffset as usize;
 
         self.genome_interval = Some(genome_interval);
+        Ok(())
     }
 
     /// Read one record. Should be called after header is parsed.
     ///
     /// If `set_interval` has been called, only records within the given interval
     /// will be read.
-    pub fn read_record(
-        &mut self,
-        record: &mut Record,
-    ) -> Result<(), Box<(dyn std::error::Error + 'static)>> {
-        assert!(
-            self.header_parsed,
-            "header should be parsed before reading records"
-        );
-        let start = self.genome_interval.as_ref().unwrap().start;
-        let end = self.genome_interval.as_ref().unwrap().end;
+    pub fn read_record(&mut self, record: &mut Record) -> Result<()> {
+        if !self.header_parsed {
+            return Err(Error::HeaderNotParsed);
+        }
+
+        let interval = self
+            .genome_interval
+            .as_ref()
+            .ok_or(Error::IndexBcfReaderMissingGenomeInterval)?;
+        let start = interval.start;
+        let end = interval.end;
         loop {
             match record.read(&mut self.inner) {
                 Ok(_) => {
@@ -1973,7 +2082,7 @@ impl IndexedBcfReader {
                         if record.pos as i64 >= end {
                             let e =
                                 std::io::Error::new(std::io::ErrorKind::NotFound, "out of range");
-                            return Err(Box::new(e));
+                            Err(e)?;
                         }
                     }
                     if record.pos as i64 >= start {
