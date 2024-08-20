@@ -98,7 +98,7 @@
 //! `zlib-ng-compat`). See <https://docs.rs/flate2/latest/flate2/> for more details.
 //!
 //!
-#![warn(clippy::unwrap_used, clippy::expect_used)]
+#![warn(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::bufread::DeflateDecoder;
 use rayon::prelude::*;
@@ -126,17 +126,19 @@ pub enum Error {
     NumericaValueAsF32Error,
     Other(String),
 }
+
+#[derive(Debug)]
+pub struct ParseGzipHeaderError {
+    pub key: &'static str,
+    pub expected: usize,
+    pub found: usize,
+}
+
 #[derive(Debug)]
 pub enum ParseHeaderError {
     HeaderCommentCharError,
     MissingDictionaryname,
     FormatError(&'static str),
-}
-
-impl From<std::io::Error> for Error {
-    fn from(value: std::io::Error) -> Self {
-        Error::Io(value)
-    }
 }
 
 trait AddContext {
@@ -148,6 +150,7 @@ impl AddContext for std::io::Error {
     }
 }
 
+// --- Display
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", *self)
@@ -158,8 +161,29 @@ impl std::fmt::Display for ParseHeaderError {
         write!(f, "{:?}", *self)
     }
 }
+impl std::fmt::Display for ParseGzipHeaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", *self)
+    }
+}
+
+// --- Error
 
 impl std::error::Error for Error {}
+
+impl std::error::Error for ParseGzipHeaderError {}
+
+// --- From
+impl From<ParseGzipHeaderError> for std::io::Error {
+    fn from(value: ParseGzipHeaderError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, Box::new(value))
+    }
+}
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Error::Io(value)
+    }
+}
 
 /// An iterator used to split a `str` by a separator with separators within pairs
 /// of quotes ignored.
@@ -341,7 +365,7 @@ impl Header {
                         && ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name)
                     {
                         m.insert("Dictionary".into(), dict_name.into());
-                        dbg!(&m, dict_str_idx_counter);
+                        // dbg!(&m, dict_str_idx_counter);
                         if m.contains_key("IDX") {
                             let idx: usize = m["IDX"]
                                 .parse()
@@ -1501,13 +1525,41 @@ where
             }
             Ok(id1) => id1,
         };
-        assert_eq!(id1, 31);
+        if id1 != 31 {
+            Err(ParseGzipHeaderError {
+                key: "id1",
+                expected: 31,
+                found: id1 as usize,
+            })?;
+        }
+
         let id2 = self.inner.read_u8()?;
-        assert_eq!(id2, 139);
+        if id2 != 139 {
+            Err(ParseGzipHeaderError {
+                key: "id2",
+                expected: 139,
+                found: id2 as usize,
+            })?;
+        }
+        // assert_eq!(id2, 139);
         let cm = self.inner.read_u8()?;
-        assert_eq!(cm, 8);
+        if cm != 8 {
+            Err(ParseGzipHeaderError {
+                key: "cm",
+                expected: 8,
+                found: cm as usize,
+            })?;
+        }
+        // assert_eq!(cm, 8);
         let flg = self.inner.read_u8()?;
-        assert_eq!(flg, 4);
+        if flg != 4 {
+            Err(ParseGzipHeaderError {
+                key: "flg",
+                expected: 4,
+                found: flg as usize,
+            })?;
+        }
+        // assert_eq!(flg, 4);
         let _mtime = self.inner.read_u32::<LittleEndian>()?;
         let _xfl = self.inner.read_u8()?;
         let _os = self.inner.read_u8()?;
