@@ -29,12 +29,16 @@
 //! assert_eq!(d["Dictionary"], "FORMAT");
 //! /// get chromosome name
 //! assert_eq!(header.get_chrname(0), "Pf3D7_01_v3");
-//! let fmt_ad_key = header.get_idx_from_dictionary_str("FORMAT", "AD").expect("FORMAT/AD not found");
-//! let info_af_key = header.get_idx_from_dictionary_str("INFO", "AF").expect("INFO/AF not found");
+//! let fmt_ad_key = header
+//!     .get_idx_from_dictionary_str("FORMAT", "AD")
+//!     .expect("FORMAT/AD not found");
+//! let info_af_key = header
+//!     .get_idx_from_dictionary_str("INFO", "AF")
+//!     .expect("INFO/AF not found");
 //!
 //! // this can be and should be reused to reduce allocation
 //! let mut record = Record::default();
-//! while let Ok(_) = record.read(&mut reader){
+//! while let Ok(_) = record.read(&mut reader) {
 //!     let pos = record.pos();
 //!
 //!     // use byte ranges and shared buffer to get allele string values
@@ -47,19 +51,19 @@
 //!     // ...
 //!
 //!     // access FORMAT/GT via iterator
-//!     for nv in record.fmt_gt(&header){
+//!     for nv in record.fmt_gt(&header) {
 //!         let nv = nv.unwrap();
 //!         let (has_no_ploidy, is_missing, is_phased, allele_idx) = nv.gt_val();
 //!         // ...
 //!     }
 //!
 //!     // access FORMAT/AD via iterator
-//!     for nv in record.fmt_field(fmt_ad_key){
+//!     for nv in record.fmt_field(fmt_ad_key) {
 //!         let nv = nv.unwrap();
-//!         match nv.int_val(){
+//!         match nv.int_val() {
 //!             None => {}
 //!             Some(ad) => {
-//!             // ...
+//!                 // ...
 //!             }
 //!         }
 //!         // ...
@@ -68,10 +72,10 @@
 //!     // access FILTERS via itertor
 //!     record.filters().for_each(|nv| {
 //!         let nv = nv.unwrap();
-//!        let filter_key = nv.int_val().unwrap() as usize;
-//!        let dict_string_map = &header.dict_strings()[&filter_key];
-//!        let filter_name = &dict_string_map["ID"];
-//!        // ...
+//!         let filter_key = nv.int_val().unwrap() as usize;
+//!         let dict_string_map = &header.dict_strings()[&filter_key];
+//!         let filter_name = &dict_string_map["ID"];
+//!         // ...
 //!     });
 //!
 //!     // access INFO/AF via itertor
@@ -79,7 +83,7 @@
 //!         let nv = nv.unwrap();
 //!         let af = nv.float_val().unwrap();
 //!         // ...
-//!    });
+//!     });
 //! }
 //! ```
 //!
@@ -96,7 +100,6 @@
 //! By default, a rust backend is used. Other `flate2` backends `zlib` and
 //! `zlib-ng-compat` has been exported as the corresponding features (`zlib` and
 //! `zlib-ng-compat`). See <https://docs.rs/flate2/latest/flate2/> for more details.
-//!
 //!
 #![warn(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -264,14 +267,21 @@ impl<'a> Iterator for QuotedSplitter<'a> {
 /// ```
 /// use bcf_reader::Header;
 ///
-/// let header_text =concat!(
-///     r#"##fileformat=VCFv4.3"#, "\n",
-///     r#"##FILTER=<ID=PASS,Description="All filters passed">"#,"\n",
-///     r#"##FILTER=<ID=FAILED1,Description="failed due to something">"#,"\n",
-///     r#"##contig=<ID=chr1,length=123123123>"#,"\n",
-///     r#"##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,"\n",
-///     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,"\n",
-///     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2","\n",
+/// let header_text = concat!(
+///     r#"##fileformat=VCFv4.3"#,
+///     "\n",
+///     r#"##FILTER=<ID=PASS,Description="All filters passed">"#,
+///     "\n",
+///     r#"##FILTER=<ID=FAILED1,Description="failed due to something">"#,
+///     "\n",
+///     r#"##contig=<ID=chr1,length=123123123>"#,
+///     "\n",
+///     r#"##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">"#,
+///     "\n",
+///     r#"##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">"#,
+///     "\n",
+///     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample1\tsample2",
+///     "\n",
 /// );
 ///
 /// let header = Header::from_string(&header_text).unwrap();
@@ -406,12 +416,12 @@ impl Header {
     ///
     /// Example:
     /// ```
-    ///  use bcf_reader::*;
-    ///  let mut f = smart_reader("testdata/test.bcf").unwrap();
-    ///  let s = read_header(&mut f).unwrap();
-    ///  let header = Header::from_string(&s).unwrap();
-    ///  let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
-    ///  assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
+    /// use bcf_reader::*;
+    /// let mut f = smart_reader("testdata/test.bcf").unwrap();
+    /// let s = read_header(&mut f).unwrap();
+    /// let header = Header::from_string(&s).unwrap();
+    /// let key_found = header.get_idx_from_dictionary_str("FORMAT", "GT").unwrap();
+    /// assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
     /// ```
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
         for (k, m) in self.dict_strings.iter() {
@@ -453,7 +463,8 @@ impl Header {
     /// // read data generated by bcftools
     /// // bcftools query -l test.bcf | bgzip -c > test_samples.gz
     /// let mut samples_str = String::new();
-    /// smart_reader("./testdata/test_samples.gz").unwrap()
+    /// smart_reader("./testdata/test_samples.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut samples_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -590,7 +601,7 @@ impl NumericValue {
     ///
     /// let missing_value = NumericValue::F32(0x7F800001);
     /// let missing_value2 = NumericValue::F32(0x7F800001);
-    /// assert_eq!(missing_value.float_val(), missing_value2.float_val()) ;
+    /// assert_eq!(missing_value.float_val(), missing_value2.float_val());
     /// dbg!(&missing_value);
     /// assert_eq!(missing_value.float_val(), None);
     /// ```
@@ -917,7 +928,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%CHROM\n' test.bcf | bgzip -c > test_chrom.gz
     /// let mut chrom_str = String::new();
-    /// smart_reader("testdata/test_chrom.gz").unwrap()
+    /// smart_reader("testdata/test_chrom.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut chrom_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -965,7 +977,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
     /// let mut gt_str = String::new();
-    /// smart_reader("testdata/test_gt.gz").unwrap()
+    /// smart_reader("testdata/test_gt.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut gt_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1032,7 +1045,8 @@ impl Record {
     /// // read data generated by bcftools
     /// //  bcftools query -f '[\t%AD]\n' test.bcf | bgzip -c > test_ad.gz
     /// let mut ad_str = String::new();
-    /// smart_reader("testdata/test_ad.gz").unwrap()
+    /// smart_reader("testdata/test_ad.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut ad_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1094,7 +1108,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%POS\n' test.bcf | bgzip -c > test_pos.gz
     /// let mut pos_str = String::new();
-    /// smart_reader("testdata/test_pos.gz").unwrap()
+    /// smart_reader("testdata/test_pos.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut pos_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1122,7 +1137,8 @@ impl Record {
     /// // bcftools query -f '%ID\n' test.bcf | bgzip -c > test_id.gz
     /// let mut id_str = String::new();
     ///
-    /// smart_reader("testdata/test_id.gz").unwrap()
+    /// smart_reader("testdata/test_id.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut id_str)
     ///     .unwrap();
     ///
@@ -1140,7 +1156,6 @@ impl Record {
     /// let id_str2 = String::from_utf8(id_str2).unwrap();
     /// // compare bcftools results and bcf-reader results
     /// assert_eq!(id_str, id_str2);
-    ///
     /// ```
     pub fn id(&self) -> Result<&str> {
         std::str::from_utf8(&self.buf_shared[self.id.start..self.id.end]).map_err(Error::Utf8Error)
@@ -1153,7 +1168,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%REF,%ALT\n' test.bcf | bgzip -c > test_allele.gz
     /// let mut allele_str = String::new();
-    /// smart_reader("testdata/test_allele.gz").unwrap()
+    /// smart_reader("testdata/test_allele.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut allele_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1187,7 +1203,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%INFO/AF\n' testdata/test2.bcf | bgzip -c > testdata/test2_info_af.gz
     /// let mut info_af_str = String::new();
-    /// smart_reader("testdata/test2_info_af.gz").unwrap()
+    /// smart_reader("testdata/test2_info_af.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut info_af_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1256,7 +1273,8 @@ impl Record {
     /// // read data generated by bcftools
     /// // bcftools query -f '%FILTER\n' testdata/test2.bcf | bgzip -c > testdata/test2_filters.gz
     /// let mut filter_str = String::new();
-    /// smart_reader("testdata/test2_filters.gz").unwrap()
+    /// smart_reader("testdata/test2_filters.gz")
+    ///     .unwrap()
     ///     .read_to_string(&mut filter_str)
     ///     .unwrap();
     /// // read data via bcf-reader
@@ -1328,19 +1346,21 @@ pub fn smart_reader(p: impl AsRef<std::path::Path>) -> std::io::Result<Box<dyn s
 /// Example:
 /// ```
 /// use bcf_reader::*;
-/// use std::io::BufReader;
 /// use std::fs::File;
+/// use std::io::BufReader;
 /// use std::io::Write;
 /// // read data generated by bcftools
 /// // bcftools query -f '[\t%GT]\n' test.bcf | bgzip -c > test_gt.gz
 /// let mut gt_str = String::new();
-/// smart_reader("testdata/test_gt.gz").unwrap()
+/// smart_reader("testdata/test_gt.gz")
+///     .unwrap()
 ///     .read_to_string(&mut gt_str)
 ///     .unwrap();
 /// // read data via bcf-reader
 /// let max_gzip_block_in_buffer = 10;
 /// let reader = File::open("testdata/test.bcf").map(BufReader::new).unwrap();
-/// let mut f = ParMultiGzipReader::from_reader(reader, max_gzip_block_in_buffer, None, None).unwrap();
+/// let mut f =
+///     ParMultiGzipReader::from_reader(reader, max_gzip_block_in_buffer, None, None).unwrap();
 /// let s = read_header(&mut f).unwrap();
 /// let header = Header::from_string(&s).unwrap();
 /// let mut record = Record::default();
@@ -1378,7 +1398,6 @@ pub fn smart_reader(p: impl AsRef<std::path::Path>) -> std::io::Result<Box<dyn s
 ///
 /// See [`ParMultiGzipReader::from_reader`] for an example to jump to a target
 /// genome interval.
-///
 pub struct ParMultiGzipReader<R>
 where
     R: Read,
@@ -1427,15 +1446,17 @@ where
     ///
     /// # Examples
     /// ```
-    /// use std::{
-    /// fs::File,
-    /// io::{BufReader, Seek},
-    /// };
     /// use bcf_reader::*;
-    ///  // index file
+    /// use std::{
+    ///     fs::File,
+    ///     io::{BufReader, Seek},
+    /// };
+    /// // index file
     /// let csi = Csi::from_path("testdata/test3.bcf.csi").unwrap();
     /// // reader
-    /// let mut reader = File::open("testdata/test3.bcf").map(BufReader::new).unwrap();
+    /// let mut reader = File::open("testdata/test3.bcf")
+    ///     .map(BufReader::new)
+    ///     .unwrap();
     ///
     /// // calculate first offsets of the target postion
     /// let start = 1495403 - 1;
@@ -1449,7 +1470,8 @@ where
     /// reader.seek(std::io::SeekFrom::Start(coffset)).unwrap();
     /// // create the parallelizable reader by wraping around the existing reader
     /// // and specifing offsets
-    /// let mut reader = ParMultiGzipReader::from_reader(reader, 1, Some(coffset), Some(uoffset)).unwrap();
+    /// let mut reader =
+    ///     ParMultiGzipReader::from_reader(reader, 1, Some(coffset), Some(uoffset)).unwrap();
     ///
     /// let mut record = Record::default();
     /// let mut pos_found = vec![];
@@ -1866,7 +1888,6 @@ impl Csi {
     /// `beg`, `end`` coordinates are 0-based. It is exclusive for end.
     /// For some reason, not all length bin are searchable.
     /// It is seems that setting `end` to `beg` + 1 works well.
-    ///
     // no sure how it works, but it is from CSIv1.pdf c code
     pub fn get_bin_id(&self, beg: i64, end: i64) -> u32 {
         let mut l = self.depth;
@@ -1917,11 +1938,14 @@ impl Csi {
 /// # Example
 /// ```
 /// use bcf_reader::*;
-/// use std::{ fs::File, io::{BufReader, Seek} };
+/// use std::{
+///     fs::File,
+///     io::{BufReader, Seek},
+/// };
 /// // underlying reader can be stdin or a file
 /// let reader = std::fs::File::open("testdata/test3.bcf")
-/// .map(BufReader::new)
-/// .unwrap();
+///     .map(BufReader::new)
+///     .unwrap();
 /// // 1. for sequential decompression (works for data from stdin or a file)
 /// let reader = flate2::bufread::MultiGzDecoder::new(reader);
 /// // 2. for parallel decompression (works for data from stdin or a file)
@@ -1938,7 +1962,7 @@ impl Csi {
 /// let mut pos_found = vec![];
 /// // iterate records from the targeted genome interval
 /// while let Ok(_) = reader.read_record(&mut record) {
-/// pos_found.push(record.pos() + 1);
+///     pos_found.push(record.pos() + 1);
 /// }
 ///
 /// assert_eq!(pos_found[0], 72);
@@ -2004,7 +2028,8 @@ pub struct GenomeInterval {
 /// ```
 /// use bcf_reader::*;
 /// // create indexed bcf reader
-/// let mut reader = IndexedBcfReader::from_path("testdata/test3.bcf", "testdata/test3.bcf.csi", None).unwrap();
+/// let mut reader =
+///     IndexedBcfReader::from_path("testdata/test3.bcf", "testdata/test3.bcf.csi", None).unwrap();
 /// // read though header
 /// let _header = reader.read_header();
 /// // define targeted genome interval
