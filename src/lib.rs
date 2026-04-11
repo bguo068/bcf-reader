@@ -101,7 +101,12 @@
 //! `zlib-ng-compat` has been exported as the corresponding features (`zlib` and
 //! `zlib-ng-compat`). See <https://docs.rs/flate2/latest/flate2/> for more details.
 //!
-#![warn(clippy::unwrap_used, clippy::expect_used, clippy::dbg_macro)]
+#![warn(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::dbg_macro,
+    clippy::panic
+)]
 use byteorder::{LittleEndian, ReadBytesExt};
 use flate2::bufread::DeflateDecoder;
 use rayon::prelude::*;
@@ -489,16 +494,17 @@ impl Header {
 /// - 3: u32 (3 bytes)
 /// - 5: f32 (4 bytes)
 /// - 7: c-char (u8, 1 byte)
-pub fn bcf2_typ_width(typ: u8) -> usize {
-    match typ {
+pub fn bcf2_typ_width(typ: u8) -> std::io::Result<usize> {
+    let width = match typ {
         0x0 => 0,
         0x1 => 1,
         0x2 => 2,
         0x3 => 4,
         0x5 => 4,
         0x7 => 1,
-        _ => panic!(),
-    }
+        _ => return Err(std::io::Error::other("unexpected bcf typ code")),
+    };
+    Ok(width)
 }
 
 #[derive(Debug, PartialEq)]
@@ -611,7 +617,7 @@ impl NumericValue {
         } else {
             match *self {
                 Self::F32(x) => Some(f32::from_bits(x)),
-                _ => panic!(),
+                _ => None,
             }
         }
     }
@@ -686,12 +692,20 @@ where
     R: std::io::Read + ReadBytesExt,
 {
     let (typ, n) = read_typed_descriptor_bytes(reader)?;
-    assert_eq!(n, 1);
+    if n != 1 {
+        return Err(std::io::Error::other(
+            "this number of element for type descriptor should one",
+        ));
+    }
     Ok(match typ {
         1 => reader.read_u8()? as u32,
         2 => reader.read_u16::<LittleEndian>()? as u32,
         3 => reader.read_u32::<LittleEndian>()?,
-        _ => panic!(),
+        _ => {
+            return Err(std::io::Error::other(
+                "unexpected number of bytes of integer type in parsing BCF",
+            ))
+        }
     })
 }
 
@@ -753,7 +767,9 @@ impl<'r> Iterator for NumericValueIter<'r> {
 
                     Some(val_res)
                 }
-                _ => panic!(),
+                _ => Some(Err(std::io::Error::other(
+                    "unexpected type in NumericValueIter",
+                ))),
             }
         }
     }
@@ -763,7 +779,7 @@ impl<'r> Iterator for NumericValueIter<'r> {
 /// - typ: data type byte
 /// - n: total number of elements to iterate
 /// - buffer: the bytes buffer
-pub fn iter_typed_integers(typ: u8, n: usize, buffer: &[u8]) -> NumericValueIter {
+pub fn iter_typed_integers(typ: u8, n: usize, buffer: &'_ [u8]) -> NumericValueIter<'_> {
     NumericValueIter {
         reader: std::io::Cursor::new(buffer),
         typ,
@@ -778,7 +794,11 @@ where
     R: std::io::Read + ReadBytesExt,
 {
     let (typ, n) = read_typed_descriptor_bytes(reader)?;
-    assert_eq!(typ, 0x7);
+    if typ != 0x7 {
+        return Err(std::io::Error::other(
+            "typed descriptor inconsist with string type",
+        ));
+    }
     let s = buffer.len();
     buffer.resize(s + n, b'\0');
     reader.read_exact(&mut buffer.as_mut_slice()[s..s + n])?;
@@ -794,13 +814,19 @@ where
     // read magic
     let mut magic = [0u8; 3];
     reader.read_exact(&mut magic)?;
-    assert_eq!(&magic, b"BCF");
+    if &magic != b"BCF" {
+        return Err(Error::Other("input file is not in BCF format".to_owned()));
+    }
 
     // read major verion and minor version
     let major = reader.read_u8()?;
-    let minor = reader.read_u8()?;
-    assert_eq!(major, 2);
-    assert_eq!(minor, 2);
+    let _minor = reader.read_u8()?;
+    if major != 2 {
+        return Err(Error::Other(
+            "BCF2 header major version is not '2'".to_owned(),
+        ));
+    }
+    // assert_eq!(minor, 2);
 
     // read text length
     let l_length = reader.read_u32::<LittleEndian>()?;
@@ -871,7 +897,11 @@ impl Record {
         self.n_fmt = (combined >> 24) as u8;
         // id
         let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
-        assert_eq!(typ, 0x7);
+        if typ != 0x7 {
+            return Err(std::io::Error::other(
+                "is not typed string when parsing variant id",
+            ));
+        }
         let cur = reader.position() as usize;
         self.id = cur..cur + n;
         reader.seek(std::io::SeekFrom::Current(n as i64))?;
@@ -879,14 +909,18 @@ impl Record {
         self.alleles.clear();
         for _ in 0..self.n_allele {
             let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
-            assert_eq!(typ, 0x7);
+            if typ != 0x7 {
+                return Err(std::io::Error::other(
+                    "is not typed string when parsing allele bytes",
+                ));
+            }
             let cur = reader.position() as usize;
             self.alleles.push(cur..cur + n);
             reader.seek(std::io::SeekFrom::Current(n as i64))?;
         }
         //filters
         let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
-        let width: usize = bcf2_typ_width(typ);
+        let width: usize = bcf2_typ_width(typ)?;
         let s = reader.position() as usize;
         let e = s + width * n;
         reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
@@ -896,7 +930,7 @@ impl Record {
         for _idx in 0..(self.n_info as usize) {
             let info_key = read_single_typed_integer(&mut reader)?;
             let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
-            let width = bcf2_typ_width(typ);
+            let width = bcf2_typ_width(typ)?;
             let s = reader.position() as usize;
             let e = s + width * n;
             reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
@@ -911,7 +945,7 @@ impl Record {
         for _idx in 0..(self.n_fmt as usize) {
             let fmt_key = read_single_typed_integer(&mut reader)?;
             let (typ, n) = read_typed_descriptor_bytes(&mut reader)?;
-            let width = bcf2_typ_width(typ);
+            let width = bcf2_typ_width(typ)?;
             let s = reader.position() as usize;
             let e = s + width * self.n_sample as usize * n;
             reader.seek(std::io::SeekFrom::Current((e - s) as i64))?;
@@ -1224,7 +1258,7 @@ impl Record {
     /// let filter_str2 = String::from_utf8(info_af_str2).unwrap();
     /// assert_eq!(info_af_str, filter_str2);
     /// ```
-    pub fn info_field_numeric(&self, info_key: usize) -> NumericValueIter {
+    pub fn info_field_numeric(&self, info_key: usize) -> NumericValueIter<'_> {
         // default
         let mut it = NumericValueIter {
             reader: std::io::Cursor::new(&[0u8; 0]),
@@ -1298,7 +1332,7 @@ impl Record {
     /// // compare bcftools results and bcf-reader results
     /// assert_eq!(filter_str, filter_str2);
     /// ```
-    pub fn filters(&self) -> NumericValueIter {
+    pub fn filters(&self) -> NumericValueIter<'_> {
         let (typ, n, rng) = &self.filters;
         NumericValueIter {
             reader: std::io::Cursor::new(&self.buf_shared[rng.start..rng.end]),
@@ -1587,11 +1621,13 @@ where
         let _os = self.inner.read_u8()?;
         let xlen = self.inner.read_u16::<LittleEndian>()?;
         let si1 = self.inner.read_u8()?;
-        assert_eq!(si1, 66);
         let si2 = self.inner.read_u8()?;
-        assert_eq!(si2, 67);
         let slen = self.inner.read_u16::<LittleEndian>()?;
-        assert_eq!(slen, 2);
+        if si1 != 66 || si2 != 67 || slen != 2 {
+            return Err(std::io::Error::other(
+                "fail to valid BGZF format in gzip file header",
+            ));
+        }
         let bsize = self.inner.read_u16::<LittleEndian>()?;
 
         let buffer_compressed = &mut this_buffer.compressed;
@@ -2001,10 +2037,9 @@ where
     /// Read one record. This should be called after the header is read and parsed.
     /// Otherwise, it will panic.
     pub fn read_record(&mut self, record: &mut Record) -> Result<()> {
-        assert!(
-            self.header_parsed,
-            "header should be parsed before reading records"
-        );
+        if !self.header_parsed {
+            return Err(Error::HeaderNotParsed);
+        }
         record.read(&mut self.inner)
     }
 }
