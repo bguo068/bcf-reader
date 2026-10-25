@@ -302,11 +302,21 @@ impl<'a> Iterator for QuotedSplitter<'a> {
 pub struct Header {
     dict_strings: HashMap<usize, HashMap<String, String>>,
     dict_contigs: HashMap<usize, HashMap<String, String>>,
+    /// dictionary (FILTER/INFO/FORMAT) -> ID -> key
+    dict_keys: HashMap<String, HashMap<String, usize>>,
+    /// dictionary (FILTER/INFO/FORMAT) -> ID -> attributes
+    dict_attrs: HashMap<String, HashMap<String, HashMap<String, String>>>,
     samples: Vec<String>,
     fmt_gt_idx: Option<usize>,
 }
 impl Header {
     /// parse header lines to structured data `Header`
+    ///
+    /// Keys are assigned like htslib does: `PASS` is always 0, then each
+    /// distinct ID gets the next key in order of appearance, unless the line
+    /// has an `IDX` attribute. An ID defined in several dictionaries (e.g.
+    /// `INFO/DP` and `FORMAT/DP`) has a single key. Contigs are numbered
+    /// separately in the same way.
     pub fn from_string(text: &str) -> std::result::Result<Self, ParseHeaderError> {
         use ParseHeaderError::*;
         let mut dict_strings = HashMap::<usize, HashMap<String, String>>::new();
@@ -318,10 +328,21 @@ impl Header {
         m.insert("Dictionary".into(), "FILTER".into());
         m.insert("ID".into(), "PASS".into());
         m.insert("Description".into(), r#""All filters passed""#.into());
-        dict_strings.insert(0, m);
-        //
-        let mut dict_str_idx_counter = 1;
-        let mut dict_contig_idx_counter = 0;
+        dict_strings.insert(0, m.clone());
+        let mut dict_keys = HashMap::<String, HashMap<String, usize>>::new();
+        let mut dict_attrs = HashMap::<String, HashMap<String, HashMap<String, String>>>::new();
+        dict_keys
+            .entry("FILTER".into())
+            .or_default()
+            .insert("PASS".into(), 0);
+        dict_attrs
+            .entry("FILTER".into())
+            .or_default()
+            .insert("PASS".into(), m);
+        // ID -> key, shared by FILTER/INFO/FORMAT
+        let mut id_keys = HashMap::<String, usize>::new();
+        id_keys.insert("PASS".into(), 0);
+        let mut contig_keys = HashMap::<String, usize>::new();
         for line in QuotedSplitter::new(text.trim_end_matches('\0').trim(), '\n', '"') {
             if line.starts_with("#CHROM") {
                 line.split("\t")
@@ -359,59 +380,77 @@ impl Header {
                     .trim_start_matches('"');
                 m.insert(k.into(), v.into());
             }
-            match dict_name {
-                "contig" => {
-                    if m.contains_key("IDX") {
-                        let idx: usize = m["IDX"]
-                            .parse()
-                            .map_err(|_| FormatError("IDX value parsing error"))?;
-                        if dict_contig_idx_counter != 0 {
-                            // if one dict string has IDX all of them should have IDX in the dictionary
-                            return Err(FormatError("not all CONTIG lines have key IDX"));
-                        }
-                        dict_contigs.insert(idx, m);
-                    } else {
-                        dict_contigs.insert(dict_contig_idx_counter, m);
-                        dict_contig_idx_counter += 1;
-                    }
-                }
-                _ => {
-                    if ((dict_name != "FILTER") || (&m["ID"] != "PASS"))
-                        && ["INFO", "FILTER", "FORMAT"].iter().any(|x| *x == dict_name)
-                    {
-                        m.insert("Dictionary".into(), dict_name.into());
-                        // dbg!(&m, dict_str_idx_counter);
-                        if m.contains_key("IDX") {
-                            let idx: usize = m["IDX"]
-                                .parse()
-                                .map_err(|_| FormatError("IDX value parsing error"))?;
-                            if dict_str_idx_counter != 1 {
-                                // if one dict string has IDX all of them should have IDX in the dictionary
-                                return Err(FormatError(
-                                    "not all INFO/FILTER/FORMAT lines have key IDX",
-                                ));
-                            }
-                            dict_strings.insert(idx, m);
-                        } else {
-                            dict_strings.insert(dict_str_idx_counter, m);
-                            dict_str_idx_counter += 1;
-                        }
-                    }
+            let is_contig = dict_name == "contig";
+            if !is_contig && !["INFO", "FILTER", "FORMAT"].contains(&dict_name) {
+                continue;
+            }
+            let id = m.get("ID").ok_or(FormatError("ID not found"))?.clone();
+            let idx_attr = match m.get("IDX") {
+                Some(x) => Some(
+                    x.parse::<usize>()
+                        .map_err(|_| FormatError("IDX value parsing error"))?,
+                ),
+                None => None,
+            };
+            // an IDX must not give the key of another ID
+            let check_idx = |keys: &HashMap<String, usize>, idx: usize| {
+                if keys.values().any(|&k| k == idx) {
+                    Err(FormatError("IDX value used by another ID"))
+                } else {
+                    Ok(idx)
                 }
             };
+            if is_contig {
+                if contig_keys.contains_key(&id) {
+                    continue;
+                }
+                let idx = match idx_attr {
+                    Some(idx) => check_idx(&contig_keys, idx)?,
+                    None => contig_keys.len(),
+                };
+                contig_keys.insert(id, idx);
+                dict_contigs.insert(idx, m);
+            } else {
+                let idx = match id_keys.get(&id) {
+                    Some(&idx) => idx,
+                    None => {
+                        let idx = match idx_attr {
+                            Some(idx) => check_idx(&id_keys, idx)?,
+                            None => id_keys.len(),
+                        };
+                        id_keys.insert(id.clone(), idx);
+                        idx
+                    }
+                };
+                // the first definition is kept
+                if dict_keys
+                    .get(dict_name)
+                    .is_some_and(|d| d.contains_key(&id))
+                {
+                    continue;
+                }
+                m.insert("Dictionary".into(), dict_name.into());
+                dict_keys
+                    .entry(dict_name.into())
+                    .or_default()
+                    .insert(id.clone(), idx);
+                dict_attrs
+                    .entry(dict_name.into())
+                    .or_default()
+                    .insert(id, m.clone());
+                // one entry per key: the first dictionary defining the ID
+                dict_strings.entry(idx).or_insert(m);
+            }
         }
 
         // find fmt_key for FORMAT/GT for convenience
-        let mut fmt_gt_idx = None;
-        for (k, m) in dict_strings.iter() {
-            if (&m["Dictionary"] == "FORMAT") && (&m["ID"] == "GT") {
-                fmt_gt_idx = Some(*k);
-            }
-        }
+        let fmt_gt_idx = dict_keys.get("FORMAT").and_then(|d| d.get("GT")).copied();
 
         Ok(Self {
             dict_strings,
             dict_contigs,
+            dict_keys,
+            dict_attrs,
             samples,
             fmt_gt_idx,
         })
@@ -429,12 +468,21 @@ impl Header {
     /// assert_eq!(key_found, header.get_fmt_gt_id().unwrap());
     /// ```
     pub fn get_idx_from_dictionary_str(&self, dictionary: &str, field: &str) -> Option<usize> {
-        for (k, m) in self.dict_strings.iter() {
-            if (m["Dictionary"] == dictionary) && (m["ID"] == field) {
-                return Some(*k);
-            }
-        }
-        None
+        self.dict_keys.get(dictionary)?.get(field).copied()
+    }
+
+    /// Get the attributes (`ID`, `Number`, `Type`, `Description`, ...) of a
+    /// given INFO/xx or FILTER/xx or FORMAT/xx field.
+    ///
+    /// Unlike [`Header::dict_strings`], this distinguishes fields of
+    /// different dictionaries sharing an ID, such as `INFO/DP` and
+    /// `FORMAT/DP`.
+    pub fn get_dictionary_attrs(
+        &self,
+        dictionary: &str,
+        field: &str,
+    ) -> Option<&HashMap<String, String>> {
+        self.dict_attrs.get(dictionary)?.get(field)
     }
 
     /// Get chromosome name from the contig index
@@ -457,6 +505,10 @@ impl Header {
     /// Get hashmap of hashmap of dictionary of strings
     /// outer key: item_idx, for FILTER/xx, FORMAT/xx, INFO/xx,
     /// inner key: is the key of the dictionary of string, such as 'ID', 'Description'
+    ///
+    /// An ID defined in several dictionaries (e.g. `INFO/DP` and `FORMAT/DP`)
+    /// has one key; its entry here is the first definition. Use
+    /// [`Header::get_dictionary_attrs`] for the others.
     pub fn dict_strings(&self) -> &HashMap<usize, HashMap<String, String>> {
         &self.dict_strings
     }
@@ -1919,29 +1971,70 @@ impl Csi {
         Ok(csi)
     }
 
-    /// Convert positional coordinate range to a bin number
+    /// Convert positional coordinate range to a bin number: the smallest
+    /// bin containing `[beg, end)` (htslib's `hts_reg2bin`).
     ///
-    /// `beg`, `end`` coordinates are 0-based. It is exclusive for end.
-    /// For some reason, not all length bin are searchable.
-    /// It is seems that setting `end` to `beg` + 1 works well.
-    // no sure how it works, but it is from CSIv1.pdf c code
+    /// `beg`, `end` coordinates are 0-based. It is exclusive for end.
     pub fn get_bin_id(&self, beg: i64, end: i64) -> u32 {
-        let mut l = self.depth;
         let end = end - 1;
+        let mut l = self.depth;
         let mut s = self.min_shift;
-        let mut t = ((1 << (self.depth * 3)) - 1) / 7;
-
+        let mut t = ((1i64 << (self.depth * 3)) - 1) / 7;
         while l > 0 {
-            // dbg!(s);
             if (beg >> s) == (end >> s) {
                 return (t + (beg >> s)) as u32;
             }
+            l -= 1;
             s += 3;
-            t += 1 << (l * 3);
-            l += 1;
+            t -= 1 << (l * 3);
         }
-
         0
+    }
+
+    /// All bins that may contain records overlapping `[beg, end)` (htslib's
+    /// `hts_reg2bins`), from the largest to the smallest.
+    pub fn get_bin_ids(&self, beg: i64, end: i64) -> Vec<u32> {
+        let end = end - 1;
+        let mut bins = vec![];
+        let mut t = 0i64;
+        let mut s = self.min_shift + self.depth * 3;
+        for l in 0..=self.depth {
+            bins.extend((t + (beg >> s))..=(t + (end >> s)).min(t + (1 << (l * 3)) - 1));
+            t += 1 << (l * 3);
+            s -= 3;
+        }
+        bins.into_iter().map(|b| b as u32).collect()
+    }
+
+    /// Virtual offset to start reading from to find all records overlapping
+    /// `[beg, end)` of contig `seqid`, or `None` if there is none (as in
+    /// htslib's `hts_itr_query`).
+    pub fn get_interval_offset(&self, seqid: usize, beg: i64, end: i64) -> Option<u64> {
+        let bins = &self.indices.get(seqid)?.bins;
+        let find = |bin: u32| {
+            bins.binary_search_by(|x| x.bin.cmp(&bin))
+                .ok()
+                .map(|i| &bins[i])
+        };
+        // records before the linear offset of the leaf bin of `beg`, or of its
+        // closest ancestor in the index, end before `beg`
+        let mut bin = self.get_bin_id(beg, beg + 1);
+        let min_off = loop {
+            if let Some(b) = find(bin) {
+                break b._loffset.0;
+            }
+            if bin == 0 {
+                break 0;
+            }
+            bin = (bin - 1) >> 3;
+        };
+        self.get_bin_ids(beg, end.max(beg + 1))
+            .into_iter()
+            .filter_map(find)
+            .flat_map(|b| b.chunks.iter())
+            .filter(|c| c.chunk_end.0 > min_off)
+            .map(|c| c.chunk_beg.0)
+            .min()
     }
 
     /// Get CsiBin based the chromosome id and bin number.
@@ -1963,7 +2056,7 @@ impl Csi {
     /// Get the max possible bin number in theory. Note, the maximum bin may not
     /// be present in the Csi index file.
     pub fn get_bin_limit(&self) -> u32 {
-        (1 << (((self.depth + 1) * 3) - 1)) / 7
+        (((1u64 << ((self.depth + 1) * 3)) - 1) / 7) as u32
     }
 }
 
@@ -2097,6 +2190,8 @@ pub struct IndexedBcfReader {
     csi: Csi,
     header_parsed: bool,
     genome_interval: Option<GenomeInterval>,
+    /// the index has no record for the interval
+    interval_empty: bool,
 }
 
 impl IndexedBcfReader {
@@ -2120,6 +2215,7 @@ impl IndexedBcfReader {
             csi,
             header_parsed: false,
             genome_interval: None,
+            interval_empty: false,
         })
     }
     /// Read the header bytes, parse them and return a `Header`
@@ -2134,17 +2230,22 @@ impl IndexedBcfReader {
     ///
     /// If no site within the genome interval, read_record will return Err(_)
     pub fn set_interval(&mut self, genome_interval: GenomeInterval) -> Result<()> {
-        // find the target based on csi
-        let bin_id = self
-            .csi
-            .get_bin_id(genome_interval.start, genome_interval.start + 1);
-
-        let (coffset, uoffset) = self
-            .csi
-            .get_bin_details(genome_interval.chrom_id, bin_id)?
-            .chunks[0]
-            .chunk_beg
-            .get_coffset_uoffset();
+        // find the target based on csi: the first chunk of all bins
+        // overlapping the interval
+        let end = genome_interval
+            .end
+            .unwrap_or(1 << (self.csi.min_shift + 3 * self.csi.depth));
+        let offset = self.csi.get_interval_offset(
+            genome_interval.chrom_id,
+            genome_interval.start.max(0),
+            end,
+        );
+        self.interval_empty = offset.is_none();
+        self.genome_interval = Some(genome_interval);
+        let Some(offset) = offset else {
+            return Ok(());
+        };
+        let (coffset, uoffset) = VirtualFileOffsets(offset).get_coffset_uoffset();
 
         let par_reader = &mut self.inner;
         par_reader.inner.seek(io::SeekFrom::Start(coffset))?;
@@ -2160,6 +2261,9 @@ impl IndexedBcfReader {
         par_reader.ngzip = 0;
         par_reader.igzip = 0;
         par_reader.ibyte = 0;
+        // the previous interval may have reached the end of the file
+        par_reader.inner_eof = false;
+        par_reader.coffset = coffset;
 
         // fill buffer
         par_reader.clear_and_fill_buffers()?;
@@ -2167,8 +2271,6 @@ impl IndexedBcfReader {
 
         // jump for uoffset
         par_reader.ibyte = uoffset as usize;
-
-        self.genome_interval = Some(genome_interval);
         Ok(())
     }
 
@@ -2185,23 +2287,27 @@ impl IndexedBcfReader {
             .genome_interval
             .as_ref()
             .ok_or(Error::IndexBcfReaderMissingGenomeInterval)?;
+        let out_of_range = || {
+            Err(Error::from(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "out of range",
+            )))
+        };
+        if self.interval_empty {
+            return out_of_range();
+        }
         let start = interval.start;
         let end = interval.end;
         loop {
-            match record.read(&mut self.inner) {
-                Ok(_) => {
-                    if let Some(end) = end {
-                        if record.pos as i64 >= end {
-                            let e =
-                                std::io::Error::new(std::io::ErrorKind::NotFound, "out of range");
-                            Err(e)?;
-                        }
-                    }
-                    if record.pos as i64 >= start {
-                        return Ok(());
-                    }
-                }
-                Err(e) => return Err(e),
+            record.read(&mut self.inner)?;
+            // records are sorted: stop at the next contig or past the end
+            if record.chrom as usize != interval.chrom_id
+                || end.is_some_and(|end| record.pos as i64 >= end)
+            {
+                return out_of_range();
+            }
+            if record.pos as i64 >= start {
+                return Ok(());
             }
         }
     }
